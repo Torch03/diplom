@@ -265,7 +265,7 @@ import pandas as pd
 
 
 # Функция для сохранения анализа поступающих по программам в Excel
-def save_program_analysis_excel_fixed():
+
     file_path_2023 = "pred2023.csv"
     file_path_2024 = "pred2024.csv"
 
@@ -282,7 +282,6 @@ def save_program_analysis_excel_fixed():
     combined_data = pd.concat([data_2023, data_2024])
 
     # Сохраняем в Excel
-    output_file = "program_analysis_fixed.xlsx"
     writer = pd.ExcelWriter(output_file, engine="openpyxl")
     combined_data.to_excel(writer, sheet_name="Programs Analysis", index=False)
     writer.close()
@@ -290,7 +289,7 @@ def save_program_analysis_excel_fixed():
     return output_file
 
 
-excel_path = save_program_analysis_excel_fixed()
+
 if excel_path:
     print(f"Анализ поступающих сохранён в файле: {excel_path}")
 
@@ -480,7 +479,7 @@ df_2024.columns = column_names
 
 # Простая модель прогноза: усреднение показателей за 2023 и 2024 годы
 predictions = df_2023.copy()
-predictions["Бюджет"] = ((df_2023["Бюджет"].fillna(0) + df_2024["Бюджет"].fillna(0)) // 2).astype(int)
+predictions["Бюджет"] = ((df_2023["Бюджет"].fillna(0) + df_2024["Бюджет"].fillna(0)) // 2).fillna(0).astype(int)
 predictions["Платно"] = ((df_2023["Платно"].fillna(0) + df_2024["Платно"].fillna(0)) // 2).astype(int)
 
 # Добавляем прогноз как 2025 год
