@@ -107,7 +107,7 @@ if pred_data_list:
     pred_data["Predicted_2025_Paid"] = model.predict(X_prog_scaled)[:, 0] * scaler_prog.scale_[1] + scaler_prog.mean_[1]
 
     pred_data[["Predicted_2025_Budget", "Predicted_2025_Paid"]] = pred_data[
-        ["Predicted_2025_Budget", "Predicted_2025_Paid"]].round(0).astype(int)
+        ["Predicted_2025_Budget", "Predicted_2025_Paid"]].round(0).replace([np.inf, -np.inf], np.nan).fillna(0).astype(int)
 
 # Сохранение итогового датасета в xlsx
 output_xlsx = 'predicted_data_2025.xlsx'
@@ -457,9 +457,9 @@ final_df = pd.DataFrame()
 final_df["Специальность"] = df_2023["Специальность"]
 final_df["Код"] = df_2023["Код"]
 final_df["Бюджет 2023"] = df_2023["Бюджет"].replace([np.inf, -np.inf], np.nan).fillna(0).astype(int)
-final_df["Платно 2023"] = df_2023["Платно"].astype(int)
-final_df["Бюджет 2024"] = df_2024["Бюджет"].astype(int)
-final_df["Платно 2024"] = df_2024["Платно"].astype(int)
+final_df["Платно 2023"] = df_2023["Платно"].replace([np.inf, -np.inf], np.nan).fillna(0).astype(int)
+final_df["Бюджет 2024"] = df_2024["Бюджет"].replace([np.inf, -np.inf], np.nan).fillna(0).astype(int)
+final_df["Платно 2024"] = df_2024["Платно"].replace([np.inf, -np.inf], np.nan).fillna(0).astype(int)
 final_df["Прогноз Бюджет 2025"] = predictions["Бюджет"]
 final_df["Прогноз Платно 2025"] = predictions["Платно"]
 
