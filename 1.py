@@ -260,39 +260,6 @@ def show_program_analysis_fixed():
 
     root.mainloop()
 
-
-import pandas as pd
-
-
-# Функция для сохранения анализа поступающих по программам в Excel
-
-    file_path_2023 = "pred2023.csv"
-    file_path_2024 = "pred2024.csv"
-
-    # Загружаем данные
-    data_2023 = analyze_programs_fixed(file_path_2023)
-    data_2024 = analyze_programs_fixed(file_path_2024)
-
-    # Проверяем, загружены ли данные
-    if data_2023 is None or data_2024 is None:
-        print("Ошибка: данные не загружены.")
-        return None
-
-    # Объединяем данные
-    combined_data = pd.concat([data_2023, data_2024])
-
-    # Сохраняем в Excel
-    writer = pd.ExcelWriter(output_file, engine="openpyxl")
-    combined_data.to_excel(writer, sheet_name="Programs Analysis", index=False)
-    writer.close()
-
-    return output_file
-
-
-
-if excel_path:
-    print(f"Анализ поступающих сохранён в файле: {excel_path}")
-
 import pandas as pd
 
 # Пути к файлам
@@ -480,7 +447,7 @@ df_2024.columns = column_names
 # Простая модель прогноза: усреднение показателей за 2023 и 2024 годы
 predictions = df_2023.copy()
 predictions["Бюджет"] = ((df_2023["Бюджет"].fillna(0) + df_2024["Бюджет"].fillna(0)) // 2).fillna(0).astype(int)
-predictions["Платно"] = ((df_2023["Платно"].fillna(0) + df_2024["Платно"].fillna(0)) // 2).astype(int)
+predictions["Платно"] = ((df_2023["Платно"].replace([np.inf, -np.inf], np.nan).fillna(0) + df_2024["Платно"].replace([np.inf, -np.inf], np.nan).fillna(0)) // 2).fillna(0).astype(int)
 
 # Добавляем прогноз как 2025 год
 predictions.insert(0, "Год", 2025)
@@ -489,7 +456,7 @@ predictions.insert(0, "Год", 2025)
 final_df = pd.DataFrame()
 final_df["Специальность"] = df_2023["Специальность"]
 final_df["Код"] = df_2023["Код"]
-final_df["Бюджет 2023"] = df_2023["Бюджет"].astype(int)
+final_df["Бюджет 2023"] = df_2023["Бюджет"].replace([np.inf, -np.inf], np.nan).fillna(0).astype(int)
 final_df["Платно 2023"] = df_2023["Платно"].astype(int)
 final_df["Бюджет 2024"] = df_2024["Бюджет"].astype(int)
 final_df["Платно 2024"] = df_2024["Платно"].astype(int)
