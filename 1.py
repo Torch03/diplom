@@ -365,3 +365,182 @@ class MainFrame(wx.Frame):
                 tab.SetBackgroundColour(wx.Colour(255, 255, 255))
 
         self.setup_toolbar()
+        self.statusbar = self.CreateStatusBar(2)
+
+        if platform.system() == 'Darwin':
+            self.SetFont(wx.Font(14, wx.FONTFAMILY_DEFAULT,
+                                 wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
+            self.statusbar.SetFont(wx.Font(12, wx.FONTFAMILY_DEFAULT,
+                                           wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
+
+        sizer = wx.BoxSizer(wx.VERTICAL)
+        sizer.Add(notebook, 1, wx.EXPAND | wx.ALL, 5)
+        main_panel.SetSizer(sizer)
+
+        self.Centre()
+        self.Show(True)
+        self.Refresh()
+
+    def setup_toolbar(self):
+        self.toolbar = self.CreateToolBar()
+        train_tool = self.toolbar.AddTool(wx.ID_ANY, "Обучить", wx.ArtProvider.GetBitmap(wx.ART_PLUS))
+        predict_tool = self.toolbar.AddTool(wx.ID_ANY, "Прогноз", wx.ArtProvider.GetBitmap(wx.ART_FIND))
+        self.toolbar.Realize()
+
+        self.Bind(wx.EVT_TOOL, self.on_train, train_tool)
+        self.Bind(wx.EVT_TOOL, self.on_predict, predict_tool)
+
+    def on_train(self, event):
+        if not self.data:
+            wx.MessageBox("Нет данных для обучения", "Ошибка", wx.OK | wx.ICON_ERROR)
+            return
+
+        dlg = wx.ProgressDialog("Обучение модели", "Подготовка...", maximum=100, parent=self)
+
+        def train_thread():
+            try:
+                X, y = self.prepare_training_data()
+                self.nn = NeuralNetwork(X.shape[1])
+                self.nn.train(X, y, progress_callback=lambda p, m: wx.CallAfter(dlg.Update, p, m))
+                wx.CallAfter(dlg.Destroy)
+                wx.CallAfter(self.update_status, "Обучение завершено")
+            except Exception as e:
+                wx.CallAfter(dlg.Destroy)
+                wx.CallAfter(wx.MessageBox, f"Ошибка обучения: {str(e)}", "Ошибка", wx.OK | wx.ICON_ERROR)
+
+        threading.Thread(target=train_thread).start()
+
+    def on_predict(self, event):
+        if not self.nn or not self.data:
+            wx.MessageBox("Сначала обучите модель", "Ошибка", wx.OK | wx.ICON_ERROR)
+            return
+
+        try:
+            latest_year = sorted(self.data.keys())[-1]
+            df = self.data[latest_year]
+            X = df[['budget', 'target', 'quota', 'paid']].values
+            predictions = self.nn.predict(X)
+
+            # Обработка прогнозов
+            self.current_predictions = np.maximum(np.floor(predictions), 0)  # Округление и замена отрицательных
+
+            self.tabs['predict'].update_predictions(df, self.current_predictions)
+            self.tabs['graphs'].update_graphs()  # Исправлен вызов метода
+
+            wx.MessageBox("Прогноз успешно сгенерирован", "Успех", wx.OK | wx.ICON_INFORMATION)
+        except Exception as e:
+            wx.MessageBox(f"Ошибка прогнозирования: {str(e)}", "Ошибка", wx.OK | wx.ICON_ERROR)
+
+    def prepare_training_data(self):
+        if len(self.data) < 2:
+            raise ValueError("Нужны данные как минимум за 2 года")
+
+        features = []
+        targets = []
+        years = sorted(self.data.keys())
+
+        for i in range(len(years) - 1):
+            current = self.data[years[i]]
+            next_year = self.data[years[i + 1]]
+
+            merged = pd.merge(
+                current, next_year,
+                on='specialty',
+                suffixes=('_current', '_next')
+            )
+
+            features.append(merged[['budget_current', 'target_current',
+                                    'quota_current', 'paid_current']].values)
+            targets.append(merged[['budget_next', 'target_next',
+                                   'quota_next', 'paid_next']].values)
+
+        return np.vstack(features), np.vstack(targets)
+
+    def update_status(self, message):
+        self.statusbar.SetStatusText(message, 0)
+
+
+# =================================
+# Input Tab Implementation
+# =================================
+class InputTab(wx.Panel):
+    title = "Входные данные"
+
+    def __init__(self, parent, main_frame):
+        super().__init__(parent)
+        self.main_frame = main_frame
+        self.init_ui()
+
+    def init_ui(self):
+        vbox = wx.BoxSizer(wx.VERTICAL)
+        self.SetBackgroundColour(wx.Colour(255, 255, 255))
+
+        control_panel = wx.Panel(self)
+        hbox = wx.BoxSizer(wx.HORIZONTAL)
+
+        self.year_entry = wx.TextCtrl(control_panel, size=(100, -1))
+        btn_paste = wx.Button(control_panel, label="Вставить из Excel")
+        btn_save = wx.Button(control_panel, label="Сохранить данные")
+
+        hbox.Add(wx.StaticText(control_panel, label="Год:"), 0, wx.ALIGN_CENTER | wx.RIGHT, 5)
+        hbox.Add(self.year_entry, 0, wx.RIGHT, 10)
+        hbox.Add(btn_paste, 0, wx.RIGHT, 5)
+        hbox.Add(btn_save, 0)
+
+        control_panel.SetSizer(hbox)
+
+        self.grid = gridlib.Grid(self)
+        self.grid.CreateGrid(0, 5)
+        self.setup_columns()
+
+        vbox.Add(control_panel, 0, wx.EXPAND | wx.ALL, 5)
+        vbox.Add(self.grid, 1, wx.EXPAND | wx.ALL, 5)
+        self.SetSizer(vbox)
+
+        btn_paste.Bind(wx.EVT_BUTTON, self.on_paste)
+        btn_save.Bind(wx.EVT_BUTTON, self.on_save_year)
+
+        if platform.system() == 'Darwin':
+            self.grid.SetLabelFont(wx.Font(13, wx.FONTFAMILY_DEFAULT,
+                                         wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
+            self.grid.SetDefaultCellFont(wx.Font(13, wx.FONTFAMILY_DEFAULT,
+                                              wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
+
+    def setup_columns(self):
+        columns = [
+            ("Специальность", 300),
+            ("Бюджет", 100),
+            ("Целевые", 100),
+            ("Квота", 100),
+            ("Платно", 100)
+        ]
+        for col, (label, width) in enumerate(columns):
+            self.grid.SetColLabelValue(col, label)
+            self.grid.SetColSize(col, width)
+
+    def on_paste(self, event):
+        if wx.TheClipboard.Open():
+            data_obj = wx.TextDataObject()
+            wx.TheClipboard.GetData(data_obj)
+            wx.TheClipboard.Close()
+            self.load_data(data_obj.GetText())
+
+    def load_data(self, text):
+        self.grid.ClearGrid()
+        if self.grid.GetNumberRows() > 0:
+            self.grid.DeleteRows(0, self.grid.GetNumberRows())
+
+        rows = [row.split('\t') for row in text.split('\n') if row.strip()]
+        for row_idx, row in enumerate(rows):
+            self.grid.AppendRows(1)
+            for col_idx, value in enumerate(row[:5]):
+                self.grid.SetCellValue(row_idx, col_idx, value.strip())
+
+    def on_save_year(self, event):
+        year = self.year_entry.GetValue().strip()
+        if not year:
+            wx.MessageBox("Укажите год данных", "Ошибка", wx.OK | wx.ICON_ERROR)
+            return
+
+        data = []
+        for row in range(self.grid.GetNumberRows()):
