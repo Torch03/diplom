@@ -544,3 +544,28 @@ class InputTab(wx.Panel):
 
         data = []
         for row in range(self.grid.GetNumberRows()):
+            values = [self.grid.GetCellValue(row, col) for col in range(5)]
+            data.append({
+                'specialty': values[0],
+                'budget': self.parse_number(values[1]),
+                'target': self.parse_number(values[2]),
+                'quota': self.parse_number(values[3]),
+                'paid': self.parse_number(values[4])
+            })
+
+        self.main_frame.data[year] = pd.DataFrame(data)
+        wx.MessageBox(f"Сохранено {len(data)} записей за {year} год", "Успех", wx.OK | wx.ICON_INFORMATION)
+
+    def parse_number(self, value):
+        try:
+            return float(str(value).replace(',', '.'))
+        except:
+            return 0.0
+
+# =================================
+# Training process Tab
+# =================================
+class LoadingDialog(wx.Dialog):
+    """Окно прогресса обучения"""
+
+    def __init__(self, parent):
