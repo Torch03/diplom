@@ -569,3 +569,116 @@ class LoadingDialog(wx.Dialog):
     """Окно прогресса обучения"""
 
     def __init__(self, parent):
+        super().__init__(parent, title="Обучение модели")
+        self.gauge = wx.Gauge(self, range=100)
+        self.status = wx.StaticText(self, label="Подготовка...")
+
+        sizer = wx.BoxSizer(wx.VERTICAL)
+        sizer.Add(self.gauge, 0, wx.EXPAND | wx.ALL, 10)
+        sizer.Add(self.status, 0, wx.EXPAND | wx.ALL, 10)
+        self.SetSizerAndFit(sizer)
+        self.Centre()
+
+    def update_progress(self, value, message):
+        self.gauge.SetValue(value)
+        self.status.SetLabel(message)
+        wx.YieldIfNeeded()
+
+# =================================
+# Prediction Tab Implementation
+# =================================
+class PredictionTab(wx.Panel):
+    title = "Аналитика"
+
+    def __init__(self, parent, main_frame):
+        super().__init__(parent)
+        self.main_frame = main_frame
+        self.init_ui()
+
+    def init_ui(self):
+        vbox = wx.BoxSizer(wx.VERTICAL)
+        self.SetBackgroundColour(wx.Colour(255, 255, 255))
+
+        # Исправлено количество колонок на 6
+        self.grid = gridlib.Grid(self)
+        self.grid.CreateGrid(0, 6)  # Было 5, стало 6
+        self.setup_columns()
+
+        # Панель управления
+        control_panel = wx.Panel(self)
+        hbox = wx.BoxSizer(wx.HORIZONTAL)
+
+        btn_excel = wx.Button(control_panel, label="Экспорт Excel", size=(120, 30))
+        btn_pdf = wx.Button(control_panel, label="Экспорт PDF", size=(120, 30))
+
+        hbox.Add(btn_excel, 0, wx.RIGHT, 10)
+        hbox.Add(btn_pdf, 0)
+
+        control_panel.SetSizer(hbox)
+
+        vbox.Add(self.grid, 1, wx.EXPAND | wx.ALL, 5)
+        vbox.Add(control_panel, 0, wx.ALIGN_RIGHT | wx.ALL, 10)
+        self.SetSizer(vbox)
+
+        # Привязка событий
+        btn_excel.Bind(wx.EVT_BUTTON, self.on_export_excel)
+        btn_pdf.Bind(wx.EVT_BUTTON, self.on_export_pdf)
+
+    def setup_columns(self):
+        columns = [
+            ("Специальность", 300),
+            ("Текущий прием", 120),
+            ("Прогноз приема", 120),
+            ("Изменение (%)", 100),
+            ("Изменение (количество)", 120),
+            ("Объяснение", 200)
+        ]
+        # Проверка соответствия количества колонок
+        if len(columns) != self.grid.GetNumberCols():
+            raise ValueError(
+                f"Количество колонок ({len(columns)}) не совпадает с созданной таблицей ({self.grid.GetNumberCols()})"
+            )
+
+        for col, (label, width) in enumerate(columns):
+            self.grid.SetColLabelValue(col, label)
+            self.grid.SetColSize(col, width)
+
+    def update_predictions(self, data, predictions):
+        self.grid.ClearGrid()
+        if self.grid.GetNumberRows() > 0:
+            self.grid.DeleteRows(0, self.grid.GetNumberRows())
+
+        for i, row in data.iterrows():
+            try:
+                current_values = row[['budget', 'target', 'quota', 'paid']].values
+                pred_values = predictions[i]
+
+                # Обработка и округление значений
+                current = [math.floor(x) for x in current_values]
+                pred = [max(math.floor(x), 0) for x in pred_values]  # Отрицательные значения -> 0
+
+                # Расчет изменений
+                changes = []
+                explanations = []
+                for c, p in zip(current, pred):
+                    if c == 0:
+                        change_percent = 0.0
+                        change_count = p
+                    else:
+                        change_percent = ((p - c) / c) * 100 if c != 0 else 0
+                        change_count = p - c
+
+                    changes.append((change_percent, max(change_count, 0)))  # Отрицательные изменения -> 0
+                    explanations.append(self.get_explanation(change_percent))
+
+                self.grid.AppendRows(1)
+                self.grid.SetCellValue(i, 0, row['specialty'])
+                self.grid.SetCellValue(i, 1, "\n".join(map(str, current)))
+                self.grid.SetCellValue(i, 2, "\n".join(map(str, pred)))
+                self.grid.SetCellValue(i, 3, "\n".join([f"{x[0]:.1f}%" for x in changes]))
+                self.grid.SetCellValue(i, 4, "\n".join([str(x[1]) for x in changes]))
+                self.grid.SetCellValue(i, 5, "\n".join(explanations))
+
+            except Exception as e:
+                print(f"Ошибка обработки строки {i}: {str(e)}")
+
