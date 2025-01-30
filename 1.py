@@ -682,3 +682,96 @@ class PredictionTab(wx.Panel):
             except Exception as e:
                 print(f"Ошибка обработки строки {i}: {str(e)}")
 
+    def get_explanation(self, change):
+        if change > 20:
+            return "Значительный рост"
+        elif change > 5:
+            return "Умеренный рост"
+        elif change < -20:
+            return "Критическое снижение"
+        elif change < -5:
+            return "Умеренное снижение"
+        else:
+            return "Стабильная ситуация"
+
+    def get_row_color(self, change):
+        if change > 15: return wx.Colour(220, 255, 220)
+        if change < -10: return wx.Colour(255, 220, 220)
+        return wx.Colour(255, 255, 255)
+
+    def on_export_excel(self, event):
+        df = self.get_grid_data()
+        with wx.FileDialog(self, "Сохранить Excel", wildcard="Excel files (*.xlsx)|*.xlsx",
+                         style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT) as fd:
+            if fd.ShowModal() == wx.ID_CANCEL:
+                return
+            df.to_excel(fd.GetPath(), index=False)
+            wx.MessageBox("Данные экспортированы в Excel", "Успех", wx.OK | wx.ICON_INFORMATION)
+
+    def on_export_pdf(self, event):
+        df = self.get_grid_data()
+        with wx.FileDialog(self, "Сохранить PDF", wildcard="PDF files (*.pdf)|*.pdf",
+                         style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT) as fd:
+            if fd.ShowModal() == wx.ID_CANCEL:
+                return
+            self.export_pdf(df, fd.GetPath())
+            wx.MessageBox("PDF документ создан", "Успех", wx.OK | wx.ICON_INFORMATION)
+
+    def get_grid_data(self):
+        data = []
+        for row in range(self.grid.GetNumberRows()):
+            data.append([
+                self.grid.GetCellValue(row, 0),
+                float(self.grid.GetCellValue(row, 1).replace(',', '')),
+                float(self.grid.GetCellValue(row, 2).replace(',', '')),
+                float(self.grid.GetCellValue(row, 3).replace('%', '')),
+                self.grid.GetCellValue(row, 4),
+                self.grid.GetCellValue(row, 5)
+            ])
+        return pd.DataFrame(data, columns=[
+            'Специальность', 'Текущий бюджет', 'Прогноз бюджета',
+            'Изменение (%)', 'Рекомендация', 'Риск'
+        ])
+
+    def export_pdf(self, df, filename):
+        doc = SimpleDocTemplate(filename, pagesize=letter)
+        elements = []
+
+        table_data = [df.columns.tolist()] + df.values.tolist()
+        table = Table(table_data)
+        table.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#4F81BD')),
+            ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
+            ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+            ('FONTSIZE', (0,0), (-1,0), 12),
+            ('FONTSIZE', (0,1), (-1,-1), 10),
+            ('GRID', (0,0), (-1,-1), 1, colors.black)
+        ]))
+        elements.append(table)
+        elements.append(Spacer(1, 20))
+
+        graph_path = "temp_plot.png"
+        self.main_frame.tabs['graphs'].figure.savefig(graph_path)
+        elements.append(Image(graph_path, width=400, height=300))
+        os.remove(graph_path)
+
+        doc.build(elements)
+
+
+# =================================
+# Future Prediction Tab Implementation
+# =================================
+class FuturePredictionTab(wx.Panel):
+    title = "Прогноз приема"
+
+    def __init__(self, parent, main_frame):
+        super().__init__(parent)
+        self.main_frame = main_frame
+        self.init_ui()
+
+    def init_ui(self):
+        vbox = wx.BoxSizer(wx.VERTICAL)
+        self.SetBackgroundColour(wx.Colour(255, 255, 255))
+
+        self.grid = gridlib.Grid(self)
+        self.grid.CreateGrid(0, 5)
