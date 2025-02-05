@@ -775,3 +775,118 @@ class FuturePredictionTab(wx.Panel):
 
         self.grid = gridlib.Grid(self)
         self.grid.CreateGrid(0, 5)
+        self.setup_columns()
+
+        control_panel = wx.Panel(self)
+        hbox = wx.BoxSizer(wx.HORIZONTAL)
+
+        btn_excel = wx.Button(control_panel, label="Экспорт Excel")
+        btn_refresh = wx.Button(control_panel, label="Обновить")
+
+        hbox.Add(btn_excel, 0, wx.RIGHT, 10)
+        hbox.Add(btn_refresh, 0)
+
+        control_panel.SetSizer(hbox)
+
+        vbox.Add(self.grid, 1, wx.EXPAND | wx.ALL, 5)
+        vbox.Add(control_panel, 0, wx.ALIGN_RIGHT | wx.ALL, 10)
+        self.SetSizer(vbox)
+
+        btn_excel.Bind(wx.EVT_BUTTON, self.on_export_excel)
+        btn_refresh.Bind(wx.EVT_BUTTON, self.on_refresh)
+
+        if platform.system() == 'Darwin':
+            self.grid.SetLabelFont(wx.Font(13, wx.FONTFAMILY_DEFAULT,
+                                         wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
+            self.grid.SetDefaultCellFont(wx.Font(13, wx.FONTFAMILY_DEFAULT,
+                                              wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
+
+    def setup_columns(self):
+        columns = [
+            ("Специальность", 300),
+            ("Бюджет", 100),
+            ("Целевые", 100),
+            ("Квота", 100),
+            ("Платно", 100)
+        ]
+        for col, (label, width) in enumerate(columns):
+            self.grid.SetColLabelValue(col, label)
+            self.grid.SetColSize(col, width)
+
+    def update_predictions(self, data, predictions):
+        self.grid.ClearGrid()
+        if self.grid.GetNumberRows() > 0:
+            self.grid.DeleteRows(0, self.grid.GetNumberRows())
+
+        for i, row in data.iterrows():
+            self.grid.AppendRows(1)
+            self.grid.SetCellValue(i, 0, row['specialty'])
+            self.grid.SetCellValue(i, 1, f"{predictions[i][0]:.1f}")
+            self.grid.SetCellValue(i, 2, f"{predictions[i][1]:.1f}")
+            self.grid.SetCellValue(i, 3, f"{predictions[i][2]:.1f}")
+            self.grid.SetCellValue(i, 4, f"{predictions[i][3]:.1f}")
+
+    def on_export_excel(self, event):
+        df = self.get_grid_data()
+        with wx.FileDialog(self, "Сохранить Excel", wildcard="Excel files (*.xlsx)|*.xlsx",
+                         style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT) as fd:
+            if fd.ShowModal() == wx.ID_CANCEL:
+                return
+            df.to_excel(fd.GetPath(), index=False)
+            wx.MessageBox("Данные экспортированы в Excel", "Успех", wx.OK | wx.ICON_INFORMATION)
+
+    def on_refresh(self, event):
+        if self.main_frame.current_predictions is not None:
+            self.update_predictions(
+                self.main_frame.data[sorted(self.main_frame.data.keys())[-1]],
+                self.main_frame.current_predictions
+            )
+
+    def get_grid_data(self):
+        data = []
+        for row in range(self.grid.GetNumberRows()):
+            data.append([
+                self.grid.GetCellValue(row, 0),
+                float(self.grid.GetCellValue(row, 1)),
+                float(self.grid.GetCellValue(row, 2)),
+                float(self.grid.GetCellValue(row, 3)),
+                float(self.grid.GetCellValue(row, 4))
+            ])
+        return pd.DataFrame(data, columns=[
+            'Специальность', 'Бюджет', 'Целевые', 'Квота', 'Платно'
+        ])
+
+# =================================
+# Graph Tab Implementation
+# =================================
+class GraphTab(wx.Panel):
+    title = "Визуализация"
+
+    def __init__(self, parent, main_frame):
+        super().__init__(parent)
+        self.main_frame = main_frame
+        self.init_ui()
+
+    def init_ui(self):
+        vbox = wx.BoxSizer(wx.VERTICAL)
+        self.SetBackgroundColour(wx.Colour(255, 255, 255))
+
+        self.figure = Figure(figsize=(10, 6))
+        self.canvas = FigureCanvas(self, -1, self.figure)
+
+        # Панель управления
+        control_panel = wx.Panel(self)
+        hbox = wx.BoxSizer(wx.HORIZONTAL)
+
+        self.btn_refresh = wx.Button(control_panel, label="Обновить графики", size=(150, 30))
+        hbox.Add(self.btn_refresh, 0, wx.ALL, 5)
+
+        control_panel.SetSizer(hbox)
+
+        vbox.Add(self.canvas, 1, wx.EXPAND | wx.ALL, 5)
+        vbox.Add(control_panel, 0, wx.ALIGN_CENTER | wx.BOTTOM, 10)
+        self.SetSizer(vbox)
+
+        self.btn_refresh.Bind(wx.EVT_BUTTON, self.update_graphs)
+
+    def update_graphs(self):
