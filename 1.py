@@ -890,3 +890,66 @@ class GraphTab(wx.Panel):
         self.btn_refresh.Bind(wx.EVT_BUTTON, self.update_graphs)
 
     def update_graphs(self):
+        try:
+            if not self.main_frame.current_predictions or not self.main_frame.data:
+                return
+
+            data = self.main_frame.data[sorted(self.main_frame.data.keys())[-1]]
+            predictions = np.maximum(self.main_frame.current_predictions, 0)  # Отрицательные значения -> 0
+            predictions = np.floor(predictions)  # Округление в меньшую сторону
+
+            self.figure.clear()
+
+            # График 1: Сравнение текущих и прогнозируемых значений
+            ax1 = self.figure.add_subplot(121)
+            categories = ['Бюджет', 'Целевые', 'Квота', 'Платно']
+            current = data[['budget', 'target', 'quota', 'paid']].mean().values
+            pred = predictions.mean(axis=0)
+            x = np.arange(len(categories))
+            ax1.bar(x - 0.2, current, 0.4, label='Текущие')
+            ax1.bar(x + 0.2, pred, 0.4, label='Прогноз')
+            ax1.set_xticks(x)
+            ax1.set_xticklabels(categories)
+            ax1.legend()
+            ax1.set_title('Средние значения по категориям')
+
+            # График 2: Распределение изменений
+            ax2 = self.figure.add_subplot(122)
+            changes = ((predictions - data[['budget', 'target', 'quota', 'paid']].values) /
+                      data[['budget', 'target', 'quota', 'paid']].values) * 100
+            changes = np.nan_to_num(changes, nan=0.0, posinf=0.0, neginf=0.0)  # Обработка NaN и бесконечностей
+            ax2.hist(changes[:,0], bins=20, color='skyblue', edgecolor='black')
+            ax2.set_title('Распределение изменений бюджета')
+            ax2.set_xlabel('Изменение (%)')
+            ax2.set_ylabel('Количество специальностей')
+
+            self.canvas.draw()
+
+        except Exception as e:
+            print(f"Ошибка построения графиков: {str(e)}")
+
+    def on_prev(self, event):
+        pass
+
+    def on_next(self, event):
+        pass
+
+
+
+# =================================
+# Report Tab Implementation
+# =================================
+class ReportTab(wx.Panel):
+    title = "AI Reports"
+
+    def __init__(self, parent, main_frame):
+        super().__init__(parent)
+        self.main_frame = main_frame
+        self.init_ui()
+
+    def init_ui(self):
+        vbox = wx.BoxSizer(wx.VERTICAL)
+
+        # Report Display
+        self.report = wx.TextCtrl(self, style=wx.TE_MULTILINE | wx.TE_READONLY | wx.TE_RICH)
+        font = wx.Font(12, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL)
