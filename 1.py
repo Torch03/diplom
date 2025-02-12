@@ -953,3 +953,244 @@ class ReportTab(wx.Panel):
         # Report Display
         self.report = wx.TextCtrl(self, style=wx.TE_MULTILINE | wx.TE_READONLY | wx.TE_RICH)
         font = wx.Font(12, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL)
+        self.report.SetFont(font)
+
+        # Control Panel
+        hbox = wx.BoxSizer(wx.HORIZONTAL)
+        self.btn_refresh = wx.Button(self, label="Refresh Report", size=(150, 30))
+        self.btn_refresh.Bind(wx.EVT_BUTTON, self.on_refresh)
+        hbox.Add(self.btn_refresh, 0, wx.ALL, 5)
+
+        self.btn_export = wx.Button(self, label="Export PDF", size=(150, 30))
+        self.btn_export.Bind(wx.EVT_BUTTON, self.on_export)
+        hbox.Add(self.btn_export, 0, wx.ALL, 5)
+
+        vbox.Add(self.report, 1, wx.EXPAND)
+        vbox.Add(hbox, 0, wx.ALIGN_RIGHT | wx.ALL, 10)
+        self.SetSizer(vbox)
+
+    def generate_report(self):
+        report_text = "University Admission Analysis Report\n\n"
+        report_text += "1. Admission Trends:\n"
+        report_text += "   - Overall growth: +12.5%\n"
+        report_text += "   - Top growing specialties: Computer Science (+25%), AI (+22%)\n\n"
+        report_text += "2. Risk Analysis:\n"
+        report_text += "   - Declining programs: Physics (-8%), Chemistry (-5%)\n"
+        report_text += "   - Overcapacity risks in: Biology, Economics\n\n"
+        report_text += "3. Recommendations:\n"
+        report_text += "   - Increase budget for STEM programs\n"
+        report_text += "   - Review quotas for Humanities\n"
+        self.report.SetValue(report_text)
+
+    def on_refresh(self, event):
+        self.generate_report()
+
+    def on_export(self, event):
+        with wx.FileDialog(self, "Save Report", wildcard="PDF files (*.pdf)|*.pdf",
+                           style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT) as fileDialog:
+            if fileDialog.ShowModal() == wx.ID_CANCEL:
+                return
+
+            path = fileDialog.GetPath()
+            try:
+                self.export_pdf_report(path)
+                wx.MessageBox(f"Report exported to {path}", "Success", wx.OK | wx.ICON_INFORMATION)
+            except Exception as e:
+                wx.MessageBox(f"Export failed: {str(e)}", "Error", wx.OK | wx.ICON_ERROR)
+
+    def export_pdf_report(self, filename):
+        c = canvas.Canvas(filename, pagesize=letter)
+        width, height = letter
+
+        # Header
+        c.setFont("Helvetica-Bold", 16)
+        c.drawString(100, height - 50, "University Admission Analysis Report")
+
+        # Main Content
+        y_position = height - 100
+        c.setFont("Helvetica", 12)
+
+        # Add tables and graphs
+        df = self.main_frame.current_predictions
+        table_data = [df.columns.values.tolist()] + df.values.tolist()
+        t = Table(table_data)
+        t.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('FONTSIZE', (0, 0), (-1, 0), 10),
+            ('FONTSIZE', (0, 1), (-1, -1), 8),
+            ('BOX', (0, 0), (-1, -1), 1, colors.black),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black)
+        ]))
+        t.wrapOn(c, width - 100, height)
+        t.drawOn(c, 50, y_position - 200)
+
+        # Add chart image
+        chart_path = "temp_chart.png"
+        self.main_frame.tabs['graphs'].figures[0].savefig(chart_path)
+        c.drawImage(chart_path, 50, y_position - 400, width=500, height=300)
+
+        c.save()
+
+
+# =================================
+# History Tab Implementation
+# =================================
+class HistoryTab(wx.Panel):
+    title = "История"
+
+    def __init__(self, parent, main_frame):
+        super().__init__(parent)
+        self.main_frame = main_frame
+        self.init_ui()
+
+    def init_ui(self):
+        vbox = wx.BoxSizer(wx.VERTICAL)
+
+        # Таблица истории
+        self.grid = gridlib.Grid(self)
+        self.grid.CreateGrid(0, 5)
+        columns = [
+            ("Дата", 120),
+            ("Год прогноза", 100),
+            ("Специальностей", 100),
+            ("Средний рост", 100),
+            ("Файл", 200)
+        ]
+        for col, (label, width) in enumerate(columns):
+            self.grid.SetColLabelValue(col, label)
+            self.grid.SetColSize(col, width)
+
+        # Кнопки управления
+        hbox = wx.BoxSizer(wx.HORIZONTAL)
+        btn_refresh = wx.Button(self, label="Обновить")
+        btn_clear = wx.Button(self, label="Очистить историю")
+
+        hbox.Add(btn_refresh, 0, wx.ALL, 5)
+        hbox.Add(btn_clear, 0, wx.ALL, 5)
+
+        vbox.Add(self.grid, 1, wx.EXPAND)
+        vbox.Add(hbox, 0, wx.ALIGN_RIGHT | wx.ALL, 5)
+        self.SetSizer(vbox)
+
+    def add_record(self, prediction_data):
+        """Добавление записи в историю"""
+        row = self.grid.GetNumberRows()
+        self.grid.AppendRows(1)
+        self.grid.SetCellValue(row, 0, time.strftime("%Y-%m-%d %H:%M"))
+        self.grid.SetCellValue(row, 1, str(prediction_data['year']))
+        self.grid.SetCellValue(row, 2, str(len(prediction_data['specilities'])))
+        self.grid.SetCellValue(row, 3, f"{prediction_data['avg_growth']:.1f}%")
+        self.grid.SetCellValue(row, 4, prediction_data['filename'])
+
+
+# =================================
+# Settings Tab Implementation
+# =================================
+class SettingsTab(wx.Panel):
+    title = "Настройки"
+
+    def __init__(self, parent, main_frame):
+        super().__init__(parent)
+        self.main_frame = main_frame
+        self.init_ui()
+
+    def init_ui(self):
+        vbox = wx.BoxSizer(wx.VERTICAL)
+
+        # Создаем элементы управления
+        self.epochs = wx.SpinCtrl(self, min=100, max=10000, initial=2000)
+        self.hidden_size = wx.SpinCtrl(self, min=32, max=512, initial=128)
+        self.learning_rate = wx.TextCtrl(self, value="0.0001")
+
+        # Настройка сетки
+        form = wx.FlexGridSizer(cols=2, hgap=10, vgap=10)
+        form.AddGrowableCol(1, 1)
+
+        # Правильное добавление элементов в сетку
+        form.AddMany([
+            # Первая строка
+            (wx.StaticText(self, label="Количество эпох:"), 0, wx.ALIGN_CENTER_VERTICAL),
+            (self.epochs, 1, wx.EXPAND),
+
+            # Вторая строка
+            (wx.StaticText(self, label="Размер скрытого слоя:"), 0, wx.ALIGN_CENTER_VERTICAL),
+            (self.hidden_size, 1, wx.EXPAND),
+
+            # Третья строка
+            (wx.StaticText(self, label="Скорость обучения:"), 0, wx.ALIGN_CENTER_VERTICAL),
+            (self.learning_rate, 1, wx.EXPAND)
+        ])
+
+        # Кнопки управления
+        btn_save = wx.Button(self, label="Сохранить настройки")
+        btn_default = wx.Button(self, label="Сбросить настройки")
+
+        # Размещение элементов
+        vbox.Add(form, 0, wx.EXPAND | wx.ALL, 15)
+        vbox.Add(btn_save, 0, wx.ALIGN_RIGHT | wx.RIGHT | wx.TOP, 15)
+        vbox.Add(btn_default, 0, wx.ALIGN_RIGHT | wx.RIGHT | wx.BOTTOM, 15)
+
+        self.SetSizer(vbox)
+        self.Layout()
+
+
+        # =================================
+        # Export Handlers
+        # =================================
+
+
+def export_to_excel(data, filename):
+    """Экспорт данных в Excel файл"""
+    try:
+        writer = pd.ExcelWriter(filename, engine='openpyxl')
+        data.to_excel(writer, index=False)
+        writer.close()
+        return True
+    except Exception as e:
+        raise Exception(f"Ошибка экспорта в Excel: {str(e)}")
+
+
+def export_to_pdf(data, filename, charts=None):
+    """Генерация PDF отчета"""
+    try:
+        c = canvas.Canvas(filename, pagesize=letter)
+        width, height = letter
+
+        # Заголовок
+        c.setFont("Helvetica-Bold", 16)
+        c.drawString(100, height - 50, "Отчет по прогнозам приема")
+
+        # Таблица данных
+        table_data = [data.columns.values.tolist()] + data.values.tolist()
+        t = Table(table_data)
+        t.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#4F81BD')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, 0), 10),
+            ('BOX', (0, 0), (-1, -1), 1, colors.black),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black)
+        ]))
+        t.wrapOn(c, width - 100, height)
+        t.drawOn(c, 50, height - 250)
+
+        # Графики
+        if charts:
+            y_pos = height - 400
+            for chart in charts:
+                c.drawImage(chart, 50, y_pos, width=500, height=300)
+                y_pos -= 350
+                c.showPage()
+
+        c.save()
+        return True
+    except Exception as e:
+        raise Exception(f"Ошибка генерации PDF: {str(e)}")
+
+
+# =================================
+# Application Entry Point
+# =================================
