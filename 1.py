@@ -1256,3 +1256,13 @@ if __name__ == "__main__":
 
     frame = MainFrame()
     app.MainLoop()
+if __name__ == "__main__":
+    app = wx.App()
+    app.SetAppName("UniversityAdmissionPredictor")
+
+    if platform.system() == 'Darwin':
+        wx.SystemOptions.SetOption("osx.openfiledialog.always-show-types", "1")
+        wx.SystemOptions.SetOption("osx.menubar.allow-in-nsapp", "1")
+
+    frame = MainFrame()
+    app.MainLoop()
