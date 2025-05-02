@@ -7,12 +7,24 @@ matplotlib.use('WXAgg')
 import math
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_wxagg import FigureCanvasWxAgg as FigureCanvas
+from matplotlib.backends.backend_wxagg import NavigationToolbar2WxAgg
 from sklearn.metrics import r2_score
 import time
 import threading
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from reportlab.platypus import Table, TableStyle, Image
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import letter
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.platypus import (
+    SimpleDocTemplate,
+    Paragraph,
+    Spacer,
+    Table,
+    TableStyle,
+    Image
+)
 from reportlab.lib import colors
 from datetime import datetime
 import os
@@ -44,13 +56,6 @@ THEMES = {
         "panel": wx.Colour(255, 255, 255),
         "grid_bg": wx.Colour(255, 255, 255),
         "grid_text": wx.Colour(0, 0, 0)
-    },
-    "dark": {
-        "background": wx.Colour(30, 30, 30),
-        "text": wx.Colour(255, 255, 255),
-        "panel": wx.Colour(50, 50, 50),
-        "grid_bg": wx.Colour(60, 60, 60),
-        "grid_text": wx.Colour(255, 255, 255)
     }
 }
 
@@ -92,11 +97,9 @@ class PredictionTab(wx.Panel):
 
         # Кнопки
         self.btn_excel = wx.Button(button_panel, label="Excel")
-        self.btn_pdf = wx.Button(button_panel, label="PDF")
         self.btn_help = wx.Button(button_panel, label="Справка")
 
         button_sizer.Add(self.btn_excel, 0, wx.RIGHT, 10)
-        button_sizer.Add(self.btn_pdf, 0)
         button_sizer.Add(self.btn_help, 0, wx.LEFT, 10)
 
         # сайзер для панели кнопок
@@ -108,7 +111,6 @@ class PredictionTab(wx.Panel):
 
         # Привязка событий
         self.btn_excel.Bind(wx.EVT_BUTTON, self.export_excel)
-        self.btn_pdf.Bind(wx.EVT_BUTTON, self.export_pdf)
         self.btn_help.Bind(wx.EVT_BUTTON, self.show_help)
 
     def setup_columns(self):
@@ -134,41 +136,82 @@ class PredictionTab(wx.Panel):
 
     def update_predictions(self, data, predictions):
         try:
-            self.grid.ClearGrid()
-            if self.grid.GetNumberRows() > 0:
-                self.grid.DeleteRows(0, self.grid.GetNumberRows())
+            current_row_count = self.grid.GetNumberRows()
+            required_rows = len(data)
 
+            # Синхронизируем количество строк
+            if current_row_count > required_rows:
+                self.grid.DeleteRows(required_rows, current_row_count - required_rows)
+            elif current_row_count < required_rows:
+                self.grid.AppendRows(required_rows - current_row_count)
+
+            # Проверка соответствия данных
+            if len(predictions) < len(data):
+                raise ValueError("Недостаточно прогнозов для данных")
+
+            # Заполняем таблицу
             for i, row in data.iterrows():
-                # Проверка наличия всех необходимых значений
-                if i >= len(predictions):
-                    break
+                if i >= self.grid.GetNumberRows():
+                    break  # Защита от выхода за границы
 
-                current_values = [row['budget'], row['target'], row['quota'], row['paid']]
-                pred_values = predictions[i]
+                # Получаем значения
+                current_values = [
+                    row.get('budget', 0),
+                    row.get('target', 0),
+                    row.get('quota', 0),
+                    row.get('paid', 0)
+                ]
+                pred_values = predictions[i] if i < len(predictions) else [0] * 4
 
-                # Расчет показателей
                 total_current = sum(current_values)
                 total_pred = sum(pred_values)
 
-                # Добавление строки
-                self.grid.AppendRows(1)
-                self.grid.SetCellValue(i, 0, str(row['specialty']))
-                self.grid.SetCellValue(i, 1, str(total_current))
-                self.grid.SetCellValue(i, 2, str(total_pred))
+                # Рассчитываем изменения
+                if total_current != 0:
+                    change_percent = ((total_pred - total_current) / total_current) * 100
+                    change_percent_str = f"{change_percent:.0f}%"
+                else:
+                    change_percent_str = "N/A"
 
-                # Форматирование изменений
-                change_percent = ((total_pred - total_current) / total_current * 100) if total_current != 0 else 0
-                self.grid.SetCellValue(i, 3, f"{change_percent:.1f}%")
-                self.grid.SetCellValue(i, 4, str(total_pred - total_current))
-                self.grid.SetCellValue(i, 5, "Рост" if total_pred > total_current else "Снижение")
+                # Формируем строку
+                cols = [
+                    str(row.get('specialty', '')),
+                    f"{total_current:.0f}",
+                    f"{total_pred:.0f}",
+                    change_percent_str,
+                    f"{total_pred - total_current:.0f}",
+                    "Рост" if total_pred > total_current else "Снижение"
+                ]
 
-            # Принудительное обновление таблицы
-            self.grid.ForceRefresh()
+                # Заполняем ячейки
+                for col_idx in range(6):
+                    if col_idx < len(cols):
+                        self.grid.SetCellValue(i, col_idx, cols[col_idx])
+
+            # Обновляем отображение
             self.grid.AutoSizeColumns()
+            self.grid.ForceRefresh()
 
         except Exception as e:
             print(f"Ошибка обновления таблицы: {str(e)}")
+            wx.MessageBox(f"Ошибка обновления данных: {str(e)}", "Ошибка", wx.OK | wx.ICON_ERROR)
             self.grid.ClearGrid()
+
+    def calculate_percent_change(self, row, predictions, index):
+        try:
+            current = sum([row.get('budget', 0), row.get('target', 0), row.get('quota', 0), row.get('paid', 0)])
+            predicted = sum(predictions[index]) if index < len(predictions) else 0
+
+            if current == 0:
+                return "N/A"
+
+            change = ((predicted - current) / current * 100)
+            return f"{change:.0f}%"
+
+        except Exception as e:
+            print(f"Ошибка расчета процента: {str(e)}")
+            return "Error"
+
 
     def show_history(self, event):
         if self.main_frame.history.get_last():
@@ -187,13 +230,9 @@ class PredictionTab(wx.Panel):
             wx.MessageBox("Данные экспортированы в Excel", "Успех", wx.OK | wx.ICON_INFORMATION)
 
     def export_pdf(self, event):
-        df = self.get_grid_data()
-        with wx.FileDialog(self, "Сохранить PDF", wildcard="PDF files (*.pdf)|*.pdf",
-                           style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT) as fd:
-            if fd.ShowModal() == wx.ID_CANCEL:
-                return
-            self.export_pdf_report(df, fd.GetPath())
-            wx.MessageBox("PDF документ создан", "Успех", wx.OK | wx.ICON_INFORMATION)
+        pass
+    def export_pdf_report(self, df, filename):
+        pass
 
     def get_grid_data(self):
         data = []
@@ -215,7 +254,11 @@ class PredictionTab(wx.Panel):
         doc = SimpleDocTemplate(filename, pagesize=letter)
         elements = []
 
-        # Добавление таблицы
+        # Добавляем заголовок
+        elements.append(Paragraph("Отчет по прогнозам приема", getSampleStyleSheet()['Title']))
+        elements.append(Spacer(1, 20))
+
+        # Создаем таблицу из данных
         table_data = [df.columns.tolist()] + df.values.tolist()
         table = Table(table_data)
         table.setStyle(TableStyle([
@@ -229,12 +272,15 @@ class PredictionTab(wx.Panel):
         elements.append(table)
         elements.append(Spacer(1, 20))
 
+        # Добавляем график
         if hasattr(self.main_frame, 'graph_tab'):
             graph_path = "temp_plot.png"
-            self.main_frame.graph_tab.figure.savefig(graph_path)
-            elements.append(Image(graph_path, width=400, height=300))
+            self.main_frame.graph_tab.figure.savefig(graph_path, bbox_inches='tight')
+            img = Image(graph_path, width=400, height=300)
+            elements.append(img)
             os.remove(graph_path)
 
+        # Генерируем PDF
         doc.build(elements)
 
 
@@ -248,47 +294,135 @@ class GraphTab(wx.Panel):
     def __init__(self, parent, main_frame):
         super().__init__(parent)
         self.main_frame = main_frame
+        self.current_graph = 0
         self.init_ui()
-        self.SetBackgroundColour(wx.WHITE)
 
     def init_ui(self):
-        vbox = wx.BoxSizer(wx.VERTICAL)
-
         self.figure = Figure(figsize=(8, 5))
         self.canvas = FigureCanvas(self, -1, self.figure)
+        self.toolbar = NavigationToolbar2WxAgg(self.canvas)
 
-        vbox.Add(self.canvas, 1, wx.EXPAND | wx.ALL, 5)
-        self.SetSizer(vbox)
+        self.btn_prev = wx.Button(self, label="← Пред")
+        self.btn_next = wx.Button(self, label="След →")
+
+        btn_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        btn_sizer.Add(self.btn_prev, 0, wx.RIGHT, 10)
+        btn_sizer.Add(self.btn_next, 0)
+
+        main_sizer = wx.BoxSizer(wx.VERTICAL)
+        main_sizer.Add(self.toolbar, 0, wx.EXPAND)
+        main_sizer.Add(self.canvas, 1, wx.EXPAND)
+        main_sizer.Add(btn_sizer, 0, wx.ALIGN_CENTER | wx.ALL, 10)
+        self.SetSizer(main_sizer)
+
+        self.btn_prev.Bind(wx.EVT_BUTTON, self.on_prev)
+        self.btn_next.Bind(wx.EVT_BUTTON, self.on_next)
+        self.update_graphs()
 
     def update_graphs(self):
+        self.figure.clear()
+
+        if self.current_graph == 0:
+            self.plot_main()
+        elif self.current_graph == 1:
+            self.plot_distribution()
+        elif self.current_graph == 2:
+            self.plot_comparison()
+        elif self.current_graph == 3:
+            self.plot_trend()
+
+        self.canvas.draw()
+
+    def plot_main(self):
+        ax = self.figure.add_subplot(111)
+        if self.main_frame.current_predictions is None:
+            return
+
+        data = self.main_frame.data[sorted(self.main_frame.data.keys())[-1]]
+        specialties = data['specialty'].tolist()[:10]
+        current = data['budget'].values[:10]
+        predicted = [math.floor(x[0]) for x in self.main_frame.current_predictions[:10]]
+
+        ax.bar(np.arange(len(specialties)) - 0.2, current, 0.4, label='Текущий')
+        ax.bar(np.arange(len(specialties)) + 0.2, predicted, 0.4, label='Прогноз')
+        ax.set_xticks(np.arange(len(specialties)))
+        ax.set_xticklabels(specialties, rotation=45, ha='right')
+        ax.legend()
+        ax.set_title('Топ 10 специальностей')
+
+    def plot_distribution(self):
+        ax = self.figure.add_subplot(111)
+        if self.main_frame.current_predictions is None:
+            return
+
+        changes = []
+        for i, row in self.main_frame.data[sorted(self.main_frame.data.keys())[-1]].iterrows():
+            current = sum([row['budget'], row['target'], row['quota'], row['paid']])
+            predicted = sum(self.main_frame.current_predictions[i])
+            changes.append(predicted - current)
+
+        ax.hist(changes, bins=15, color='skyblue', edgecolor='black')
+        ax.set_title('Распределение изменений')
+        ax.set_xlabel('Изменение количества мест')
+        ax.set_ylabel('Количество специальностей')
+        ax.grid(True)
+
+    def plot_comparison(self):
+        ax = self.figure.add_subplot(111)
+        if self.main_frame.current_predictions is None:
+            return
+
+        data = self.main_frame.data[sorted(self.main_frame.data.keys())[-1]]
+        total_budget = data['budget'].sum()
+        total_paid = data['paid'].sum()
+
+        labels = ['Бюджетные', 'Платные']
+        sizes = [total_budget, total_paid]
+
+        ax.pie(sizes, labels=labels, autopct='%1.1f%%',
+               startangle=90, colors=['#66b3ff', '#99ff99'])
+        ax.axis('equal')
+        ax.set_title('Соотношение бюджетных и платных мест')
+
+    def plot_trend(self):
+        ax = self.figure.add_subplot(111)
+
+        if len(self.main_frame.data) < 2:
+            ax.set_title("Недостаточно данных для построения тренда")
+            return
+
         try:
-            self.figure.clear()
+            years = sorted(self.main_frame.data.keys())
+            trends = []
 
-            if not self.main_frame.current_predictions or not self.main_frame.data:
-                return
+            for year in years:
+                total = self.main_frame.data[year][['budget', 'target', 'quota', 'paid']].sum().sum()
+                trends.append(total)
 
-            data = self.main_frame.data[sorted(self.main_frame.data.keys())[-1]]
-            pred = self.main_frame.current_predictions
+            # Преобразуем года в строки для корректного отображения
+            str_years = [str(year) for year in years]
 
-            categories = data['specialty'].tolist()[:10]
-            current = data['budget'].values[:10]
-            predicted = [math.floor(x[0]) for x in pred[:10]]
-
-            ax = self.figure.add_subplot(111)
-            x = np.arange(len(categories))
-
-            ax.bar(x - 0.2, current, 0.4, label='Текущий')
-            ax.bar(x + 0.2, predicted, 0.4, label='Прогноз')
-
-            ax.set_xticks(x)
-            ax.set_xticklabels(categories, rotation=45, ha='right')
-            ax.legend()
-            ax.set_title('Топ 10 специальностей')
-
-            self.canvas.draw()
+            ax.plot(str_years, trends, marker='o', linestyle='-', color='green')
+            ax.set_title('Динамика общего набора по годам')
+            ax.grid(True)
+            ax.set_xlabel('Год')
+            ax.set_ylabel('Общее количество мест')
 
         except Exception as e:
-            print(f"Ошибка графиков: {e}")
+            print(f"Ошибка построения тренда: {str(e)}")
+            ax.set_title("Ошибка построения тренда")
+
+    def save_plot(self, filename, title):
+        self.figure.savefig(filename, bbox_inches='tight')
+        return filename
+
+    def on_prev(self, event):
+        self.current_graph = (self.current_graph - 1) % 3
+        self.update_graphs()
+
+    def on_next(self, event):
+        self.current_graph = (self.current_graph + 1) % 3
+        self.update_graphs()
 
 
 # =================================
@@ -506,13 +640,12 @@ class MainFrame(wx.Frame):
         self.prediction_tab = PredictionTab(notebook, self)
         self.graph_tab = GraphTab(notebook, self)
         self.history_tab = HistoryTab(notebook, self)
-        self.risk_tab = RiskAnalysisTab(notebook, self)
 
         notebook.AddPage(self.input_tab, "Ввод данных")
         notebook.AddPage(self.prediction_tab, "Прогнозы")
         notebook.AddPage(self.graph_tab, "Графики")
         notebook.AddPage(self.history_tab, "История")
-        notebook.AddPage(self.risk_tab, "Анализ изменений")
+
 
         # Главный сайзер
         main_sizer = wx.BoxSizer(wx.VERTICAL)
@@ -570,27 +703,7 @@ class MainFrame(wx.Frame):
         self.SetMenuBar(self.menubar)
 
     def setup_theme_menu(self):
-        """Создает меню для выбора темы оформления"""
-        theme_menu = wx.Menu()
-
-        # Пункты меню
-        light_item = theme_menu.Append(
-            wx.ID_ANY,
-            "Светлая тема\tCtrl+L",
-            "Переключить на светлую цветовую схему"
-        )
-        dark_item = theme_menu.Append(
-            wx.ID_ANY,
-            "Темная тема\tCtrl+D",
-            "Переключить на темную цветовую схему"
-        )
-
-        # Привязка обработчиков
-        self.Bind(wx.EVT_MENU, lambda e: self.change_theme("light"), light_item)
-        self.Bind(wx.EVT_MENU, lambda e: self.change_theme("dark"), dark_item)
-
-        # Добавление в главное меню
-        self.menubar.Append(theme_menu, "&Темы")
+        pass
 
     def change_theme(self, theme_name):
         """Применяет выбранную тему ко всему приложению"""
@@ -626,8 +739,7 @@ class MainFrame(wx.Frame):
         grids = [
             self.input_tab.grid,
             self.prediction_tab.grid,
-            self.history_tab.grid,
-            self.risk_tab.grid
+            self.history_tab.grid
         ]
 
         # Привязка обработчика контекстного меню
@@ -1135,86 +1247,6 @@ class FuturePredictionTab(wx.Panel):
 
 
 # =================================
-# Graph Tab Implementation
-# =================================
-
-class GraphTab(wx.Panel):
-    def __init__(self, parent, main_frame):
-        super().__init__(parent)
-        self.main_frame = main_frame
-        self.init_ui()
-        self.SetBackgroundColour(DEFAULT_COLORS['background'])
-        self.last_plot_type = 'bar'
-
-    def init_ui(self):
-        vbox = wx.BoxSizer(wx.VERTICAL)
-
-        # Простейший график-заглушка
-        self.figure = Figure(figsize=(8, 4))
-        self.canvas = FigureCanvas(self, -1, self.figure)
-        self.plot_dummy_data()  # Всегда строим график при инициализации
-
-        # Панель управления
-        control_panel = wx.Panel(self)
-        self.btn_update = wx.Button(control_panel, label="Обновить")
-        self.btn_export = wx.Button(control_panel, label="Экспорт")
-
-        self.btn_update.Bind(wx.EVT_BUTTON, self.update_graphs)
-        self.btn_export.Bind(wx.EVT_BUTTON, self.export_plot)
-
-        hbox = wx.BoxSizer(wx.HORIZONTAL)
-        hbox.Add(self.btn_update, 0, wx.RIGHT, 10)
-        hbox.Add(self.btn_export, 0)
-        control_panel.SetSizer(hbox)
-
-        vbox.Add(self.canvas, 1, wx.EXPAND | wx.ALL, 5)
-        vbox.Add(control_panel, 0, wx.ALIGN_CENTER | wx.BOTTOM, 10)
-        self.SetSizer(vbox)
-
-    def plot_dummy_data(self):
-        self.figure.clear()
-        ax = self.figure.add_subplot(111)
-        ax.plot([1, 2, 3, 4], [1, 4, 9, 16], 'r--')
-        ax.set_title('График готовности системы')
-        ax.set_xlabel('Время работы')
-        ax.set_ylabel('Производительность')
-        self.canvas.draw()
-
-    def update_graphs(self, event=None):
-        try:
-            self.figure.clear()
-            ax = self.figure.add_subplot(111)
-
-            if self.main_frame.current_predictions is not None:
-                # Если есть данные, строим реальный график
-                data = self.main_frame.data[sorted(self.main_frame.data.keys())[-1]]
-                specialties = data['specialty'].tolist()[:5]
-                values = self.main_frame.current_predictions[:5].sum(axis=1)
-                ax.bar(specialties, values, color=DEFAULT_COLORS['positive'])
-                ax.set_title('Топ-5 специальностей по прогнозу')
-            else:
-                # Иначе обновляем заглушку
-                self.plot_dummy_data()
-
-            self.canvas.draw()
-        except Exception as e:
-            self.plot_dummy_data()
-
-    def export_plot(self, event):
-        with wx.FileDialog(self, "Сохранить график", wildcard="PNG files (*.png)|*.png",
-                           style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT) as fd:
-            if fd.ShowModal() == wx.ID_OK:
-                self.figure.savefig(fd.GetPath(), dpi=300)
-                wx.MessageBox("График сохранен!", "Успех", wx.OK | wx.ICON_INFORMATION)
-
-    def on_prev(self, event):
-        pass
-
-    def on_next(self, event):
-        pass
-
-
-# =================================
 # Report Tab Implementation
 # =================================
 
@@ -1398,60 +1430,6 @@ class RiskAnalyzer:
         return pd.DataFrame(risks)
 
 
-# =================================
-# Risk Analysis Tab
-# =================================
-
-class RiskAnalysisTab(wx.Panel):
-    def __init__(self, parent, main_frame):
-        super().__init__(parent)
-        self.main_frame = main_frame
-        self.init_ui()
-
-    def init_ui(self):
-        vbox = wx.BoxSizer(wx.VERTICAL)
-
-        self.grid = gridlib.Grid(self)
-        self.grid.CreateGrid(0, 2)
-        self.setup_columns()
-
-        vbox.Add(self.grid, 1, wx.EXPAND | wx.ALL, 5)
-        self.SetSizer(vbox)
-
-    def setup_columns(self):
-        columns = [
-            ("Специальность", 400),
-            ("Масштаб изменений", 200)
-        ]
-        for col, (label, width) in enumerate(columns):
-            self.grid.SetColLabelValue(col, label)
-            self.grid.SetColSize(col, width)
-        self.grid.DisableDragColSize()
-
-    def update_risks(self, risks):
-        self.grid.ClearGrid()
-        if self.grid.GetNumberRows() > 0:
-            self.grid.DeleteRows(0, self.grid.GetNumberRows())
-
-        for i, (specialty, risk) in enumerate(risks.items()):
-            self.grid.AppendRows(1)
-            self.grid.SetCellValue(i, 0, specialty)
-            self.grid.SetCellValue(i, 1, risk)
-
-    def update_risk_analysis(self):
-        risks = {}
-        if self.current_predictions is not None and self.data:
-            latest_year = sorted(self.data.keys())[-1]
-            df = self.data[latest_year]
-            for i, row in df.iterrows():
-                # Проверка отрицательных значений в прогнозе
-                if any(x < 0 for x in self.current_predictions[i]):
-                    risks[row['specialty']] = "Значительные изменения"
-                # Проверка резких изменений
-                elif abs(sum(self.current_predictions[i]) - sum(row[['budget', 'target', 'quota', 'paid']])) > 50:
-                    risks[row['specialty']] = "Средний масштаб изменений"
-        self.risk_tab.update_risks(risks)
-
 
 # =================================
 # SettingsDialog
@@ -1605,9 +1583,7 @@ class UserManualDialog(wx.Dialog):
 Горячие клавиши
 
 • Ctrl+S - сохранить проект
-• Ctrl+O - открыть проект
-• Ctrl+L - светлая тема
-• Ctrl+D - темная тема"""
+• Ctrl+O - открыть проект"""
 
     def get_data_management_text(self):
         return """2. Управление данными:
@@ -1682,17 +1658,10 @@ class UserManualDialog(wx.Dialog):
 • Форматы экспорта:
   - Excel (полная таблица)
   - PDF (отчет с графиками)
-  - PNG (изображения графиков)
-
-Анализ рисков
-
-• Уровни риска:
-  - Высокий: красный значок
-  - Средний: желтый значок
-  - Низкий: зеленый значок"""
+  - PNG (изображения графиков)"""
 
     def get_history_text(self):
-        return """5. История и риски:
+        return """5. История:
 
 История прогнозов
 
@@ -1707,13 +1676,6 @@ class UserManualDialog(wx.Dialog):
 • Просмотр: двойной клик по записи
 • Фильтрация: контекстное меню
 • Экспорт: через меню вкладки
-
-Анализ рисков
-
-• Критерии оценки:
-  - Резкие изменения показателей
-  - Отрицательные значения
-  - Отклонения от средних значений
 
 Восстановление данных
 
