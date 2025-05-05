@@ -3,6 +3,7 @@ import wx.grid as gridlib
 import numpy as np
 import pandas as pd
 import matplotlib
+
 matplotlib.use('WXAgg')
 import math
 from matplotlib.figure import Figure
@@ -31,10 +32,10 @@ import os
 import pickle
 
 import platform
+
 if platform.system() == 'Darwin':
     wx.SystemOptions.SetOption("osx.openfiledialog.always-show-types", "1")
     wx.SystemOptions.SetOption("osx.menubar.allow-in-nsapp", "1")
-
 
 # =================================
 # Константы и вспомогательные функции
@@ -59,8 +60,10 @@ THEMES = {
     }
 }
 
+
 def format_date():
     return datetime.now().strftime("%Y-%m-%d %H:%M")
+
 
 def create_menu_item(menu, label, func):
     item = wx.MenuItem(menu, -1, label)
@@ -79,39 +82,78 @@ class PredictionTab(wx.Panel):
     def __init__(self, parent, main_frame):
         super().__init__(parent)
         self.main_frame = main_frame
+        self.current_mode = 'main'  # 'main' или 'city'
         self.init_ui()
         self.SetBackgroundColour(wx.WHITE)
 
     def init_ui(self):
         main_sizer = wx.BoxSizer(wx.VERTICAL)
 
+        mode_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        self.btn_main = wx.Button(self, label="Основные данные")
+        self.btn_city = wx.Button(self, label="Городские данные")
+        mode_sizer.Add(self.btn_main, 0, wx.RIGHT, 10)
+        mode_sizer.Add(self.btn_city, 0)
+
         # Грид
         self.grid = gridlib.Grid(self)
         self.grid.CreateGrid(0, 6)
         self.setup_columns()
-        main_sizer.Add(self.grid, 1, wx.EXPAND | wx.ALL, 5)
 
         # Отдельная панель для кнопок
         button_panel = wx.Panel(self)
         button_sizer = wx.BoxSizer(wx.HORIZONTAL)
-
-        # Кнопки
         self.btn_excel = wx.Button(button_panel, label="Excel")
         self.btn_help = wx.Button(button_panel, label="Справка")
-
         button_sizer.Add(self.btn_excel, 0, wx.RIGHT, 10)
         button_sizer.Add(self.btn_help, 0, wx.LEFT, 10)
-
-        # сайзер для панели кнопок
         button_panel.SetSizer(button_sizer)
 
+        main_sizer.Add(mode_sizer, 0, wx.ALL, 5)
+        main_sizer.Add(self.grid, 1, wx.EXPAND | wx.ALL, 5)
         main_sizer.Add(button_panel, 0, wx.ALIGN_RIGHT | wx.ALL, 5)
-
         self.SetSizerAndFit(main_sizer)
 
-        # Привязка событий
+        self.btn_main.Bind(wx.EVT_BUTTON, lambda e: self.switch_mode('main'))
+        self.btn_city.Bind(wx.EVT_BUTTON, lambda e: self.switch_mode('city'))
         self.btn_excel.Bind(wx.EVT_BUTTON, self.export_excel)
         self.btn_help.Bind(wx.EVT_BUTTON, self.show_help)
+
+    def switch_mode(self, mode):
+        self.current_mode = mode
+        if mode == 'main':
+            self.btn_main.SetBackgroundColour(wx.Colour(200, 200, 255))
+            self.btn_city.SetBackgroundColour(wx.NullColour)
+            if hasattr(self.main_frame, 'current_predictions') and hasattr(self.main_frame,
+                                                                           'data') and self.main_frame.data:
+                try:
+                    latest_year = sorted(self.main_frame.data.keys())[-1]
+                    self.update_predictions(
+                        self.main_frame.data[latest_year],
+                        self.main_frame.current_predictions
+                    )
+                except IndexError:
+                    wx.MessageBox("Нет основных данных для отображения", "Информация", wx.OK | wx.ICON_INFORMATION)
+            else:
+                self.grid.ClearGrid()
+                wx.MessageBox("Нет основных данных для отображения", "Информация", wx.OK | wx.ICON_INFORMATION)
+        else:
+            self.btn_city.SetBackgroundColour(wx.Colour(200, 200, 255))
+            self.btn_main.SetBackgroundColour(wx.NullColour)
+            if hasattr(self.main_frame, 'current_city_predictions') and hasattr(self.main_frame,
+                                                                                'city_data') and self.main_frame.city_data:
+                try:
+                    latest_year = sorted(self.main_frame.city_data.keys())[-1]
+                    self.update_city_predictions(
+                        self.main_frame.city_data[latest_year],
+                        self.main_frame.current_city_predictions
+                    )
+                except IndexError:
+                    wx.MessageBox("Нет городских данных для отображения", "Информация", wx.OK | wx.ICON_INFORMATION)
+            else:
+                self.grid.ClearGrid()
+                wx.MessageBox("Нет городских данных для отображения", "Информация", wx.OK | wx.ICON_INFORMATION)
+        self.Refresh()
 
     def setup_columns(self):
 
@@ -136,65 +178,107 @@ class PredictionTab(wx.Panel):
 
     def update_predictions(self, data, predictions):
         try:
+            # Очищаем предыдущие данные
+            current_row_count = self.grid.GetNumberRows()
+            if current_row_count > 0:
+                self.grid.DeleteRows(0, current_row_count)
+
+            # Создаем новые строки
+            required_rows = len(data)
+            if required_rows > 0:
+                self.grid.AppendRows(required_rows)
+
+            # Рассчитываем показатели
+            data['total_current'] = data[['budget', 'target', 'quota', 'paid']].sum(axis=1)
+            data['total_predicted'] = [sum(pred) for pred in predictions]
+            data['change_abs'] = data['total_predicted'] - data['total_current']
+            data['change_pct'] = (data['change_abs'] / data['total_current'] * 100).fillna(0)
+            data['trend'] = np.where(data['change_abs'] >= 0, '▲ Рост', '▼ Снижение')
+
+            # Заполняем таблицу
+            for idx, row in data.iterrows():
+                if idx >= self.grid.GetNumberRows():
+                    break
+
+                self.grid.SetCellValue(idx, 0, str(row['specialty']))
+                self.grid.SetCellValue(idx, 1, f"{row['total_current']:.0f}")
+                self.grid.SetCellValue(idx, 2, f"{row['total_predicted']:.0f}")
+                self.grid.SetCellValue(idx, 3, f"{row['change_pct']:.1f}%")
+                self.grid.SetCellValue(idx, 4, f"{row['change_abs']:.0f}")
+                self.grid.SetCellValue(idx, 5, row['trend'])
+
+                # Подсветка ячеек
+                for col in [3, 4, 5]:
+                    if row['change_abs'] > 0:
+                        self.grid.SetCellBackgroundColour(idx, col, wx.Colour(220, 255, 220))
+                    elif row['change_abs'] < 0:
+                        self.grid.SetCellBackgroundColour(idx, col, wx.Colour(255, 220, 220))
+
+            self.grid.AutoSizeColumns()
+            self.grid.ForceRefresh()
+
+        except Exception as e:
+            error_msg = f"Ошибка обновления прогнозов: {str(e)}"
+            print(error_msg)
+            wx.MessageBox(error_msg, "Ошибка", wx.OK | wx.ICON_ERROR)
+            self.grid.ClearGrid()
+
+    def update_city_predictions(self, data, predictions):
+        try:
             current_row_count = self.grid.GetNumberRows()
             required_rows = len(data)
 
-            # Синхронизируем количество строк
             if current_row_count > required_rows:
                 self.grid.DeleteRows(required_rows, current_row_count - required_rows)
             elif current_row_count < required_rows:
                 self.grid.AppendRows(required_rows - current_row_count)
 
-            # Проверка соответствия данных
-            if len(predictions) < len(data):
-                raise ValueError("Недостаточно прогнозов для данных")
+            columns = [
+                ("Город", 300),
+                ("Текущее очное", 150),
+                ("Прогноз очное", 150),
+                ("Текущее заочное", 150),
+                ("Прогноз заочное", 150),
+                ("Изменение", 100)
+            ]
+            for col, (label, width) in enumerate(columns):
+                self.grid.SetColLabelValue(col, label)
+                self.grid.SetColSize(col, width)
 
-            # Заполняем таблицу
             for i, row in data.iterrows():
                 if i >= self.grid.GetNumberRows():
-                    break  # Защита от выхода за границы
+                    break
 
-                # Получаем значения
-                current_values = [
-                    row.get('budget', 0),
-                    row.get('target', 0),
-                    row.get('quota', 0),
-                    row.get('paid', 0)
-                ]
-                pred_values = predictions[i] if i < len(predictions) else [0] * 4
+                current_full = row.get('full_time', 0)
+                current_part = row.get('part_time', 0)
+                pred_full = predictions[i][0] if i < len(predictions) else 0
+                pred_part = predictions[i][1] if i < len(predictions) else 0
 
-                total_current = sum(current_values)
-                total_pred = sum(pred_values)
+                total_current = current_full + current_part
+                total_pred = pred_full + pred_part
 
-                # Рассчитываем изменения
-                if total_current != 0:
-                    change_percent = ((total_pred - total_current) / total_current) * 100
-                    change_percent_str = f"{change_percent:.0f}%"
-                else:
-                    change_percent_str = "N/A"
+                change = total_pred - total_current
+                change_percent = (change / total_current * 100) if total_current != 0 else 0
 
-                # Формируем строку
                 cols = [
-                    str(row.get('specialty', '')),
-                    f"{total_current:.0f}",
-                    f"{total_pred:.0f}",
-                    change_percent_str,
-                    f"{total_pred - total_current:.0f}",
-                    "Рост" if total_pred > total_current else "Снижение"
+                    str(row.get('city', '')),
+                    f"{current_full:.0f}",
+                    f"{pred_full:.0f}",
+                    f"{current_part:.0f}",
+                    f"{pred_part:.0f}",
+                    f"{change:.0f} ({change_percent:.1f}%)"
                 ]
 
-                # Заполняем ячейки
                 for col_idx in range(6):
                     if col_idx < len(cols):
                         self.grid.SetCellValue(i, col_idx, cols[col_idx])
 
-            # Обновляем отображение
             self.grid.AutoSizeColumns()
             self.grid.ForceRefresh()
 
         except Exception as e:
-            print(f"Ошибка обновления таблицы: {str(e)}")
-            wx.MessageBox(f"Ошибка обновления данных: {str(e)}", "Ошибка", wx.OK | wx.ICON_ERROR)
+            print(f"Ошибка обновления городских прогнозов: {str(e)}")
+            wx.MessageBox(f"Ошибка обновления городских данных: {str(e)}", "Ошибка", wx.OK | wx.ICON_ERROR)
             self.grid.ClearGrid()
 
     def calculate_percent_change(self, row, predictions, index):
@@ -212,7 +296,6 @@ class PredictionTab(wx.Panel):
             print(f"Ошибка расчета процента: {str(e)}")
             return "Error"
 
-
     def show_history(self, event):
         if self.main_frame.history.get_last():
             data = self.main_frame.history.get_last()['data']
@@ -222,43 +305,46 @@ class PredictionTab(wx.Panel):
 
     def export_excel(self, event):
         df = self.get_grid_data()
-        with wx.FileDialog(self, "Сохранить Excel", wildcard="Excel files (*.xlsx)|*.xlsx",
-                           style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT) as fd:
+        mode = "основных" if self.current_mode == 'main' else "городских"
+        with wx.FileDialog(
+                self,
+                f"Сохранить {mode} данные в Excel",
+                wildcard="Excel files (*.xlsx)|*.xlsx",
+                style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT
+        ) as fd:
             if fd.ShowModal() == wx.ID_CANCEL:
                 return
             df.to_excel(fd.GetPath(), index=False)
-            wx.MessageBox("Данные экспортированы в Excel", "Успех", wx.OK | wx.ICON_INFORMATION)
+            wx.MessageBox(f"{mode.capitalize()} данные экспортированы в Excel", "Успех", wx.OK | wx.ICON_INFORMATION)
 
     def export_pdf(self, event):
         pass
+
     def export_pdf_report(self, df, filename):
         pass
 
     def get_grid_data(self):
         data = []
+        if self.current_mode == 'main':
+            columns = ['Специальность', 'Текущий набор', 'Прогноз', 'Изменение (%)', 'Изменение', 'Тренд']
+        else:
+            columns = ['Город', 'Текущее очное', 'Прогноз очное', 'Текущее заочное', 'Прогноз заочное', 'Изменение']
+
         for row in range(self.grid.GetNumberRows()):
-            data.append([
-                self.grid.GetCellValue(row, 0),
-                self.grid.GetCellValue(row, 1),
-                self.grid.GetCellValue(row, 2),
-                self.grid.GetCellValue(row, 3),
-                self.grid.GetCellValue(row, 4),
-                self.grid.GetCellValue(row, 5)
-            ])
-        return pd.DataFrame(data, columns=[
-            'Специальность', 'Текущий набор', 'Прогноз',
-            'Изменение (%)', 'Изменение', 'Тренд'
-        ])
+            row_data = []
+            for col in range(6):
+                row_data.append(self.grid.GetCellValue(row, col))
+            data.append(row_data)
+
+        return pd.DataFrame(data, columns=columns)
 
     def export_pdf_report(self, df, filename):
         doc = SimpleDocTemplate(filename, pagesize=letter)
         elements = []
 
-        # Добавляем заголовок
         elements.append(Paragraph("Отчет по прогнозам приема", getSampleStyleSheet()['Title']))
         elements.append(Spacer(1, 20))
 
-        # Создаем таблицу из данных
         table_data = [df.columns.tolist()] + df.values.tolist()
         table = Table(table_data)
         table.setStyle(TableStyle([
@@ -272,7 +358,6 @@ class PredictionTab(wx.Panel):
         elements.append(table)
         elements.append(Spacer(1, 20))
 
-        # Добавляем график
         if hasattr(self.main_frame, 'graph_tab'):
             graph_path = "temp_plot.png"
             self.main_frame.graph_tab.figure.savefig(graph_path, bbox_inches='tight')
@@ -280,7 +365,6 @@ class PredictionTab(wx.Panel):
             elements.append(img)
             os.remove(graph_path)
 
-        # Генерируем PDF
         doc.build(elements)
 
 
@@ -331,24 +415,40 @@ class GraphTab(wx.Panel):
         elif self.current_graph == 3:
             self.plot_trend()
 
+            self.figure.tight_layout(rect=[0.1, 0.1, 0.9, 0.85])  # Оставляем место для легенды
+            self.canvas.draw()
+
         self.canvas.draw()
 
     def plot_main(self):
         ax = self.figure.add_subplot(111)
-        if self.main_frame.current_predictions is None:
+        if not self.main_frame.data:
             return
 
-        data = self.main_frame.data[sorted(self.main_frame.data.keys())[-1]]
-        specialties = data['specialty'].tolist()[:10]
-        current = data['budget'].values[:10]
-        predicted = [math.floor(x[0]) for x in self.main_frame.current_predictions[:10]]
+        latest_year = sorted(self.main_frame.data.keys())[-1]
+        data = self.main_frame.data[latest_year]
 
-        ax.bar(np.arange(len(specialties)) - 0.2, current, 0.4, label='Текущий')
-        ax.bar(np.arange(len(specialties)) + 0.2, predicted, 0.4, label='Прогноз')
-        ax.set_xticks(np.arange(len(specialties)))
+        data['total'] = data[['budget', 'target', 'quota', 'paid']].sum(axis=1)
+
+        top_data = data.nlargest(10, 'total')
+
+        specialties = top_data['specialty'].tolist()
+        current = top_data['total'].values
+        predicted = [sum(pred) for pred in self.main_frame.current_predictions[:10]]
+
+        x = np.arange(len(specialties))
+        ax.bar(x - 0.2, current, 0.4, label='Текущий', color='#1f77b4')
+        ax.bar(x + 0.2, predicted, 0.4, label='Прогноз', color='#ff7f0e')
+
+        ax.set_xticks(x)
         ax.set_xticklabels(specialties, rotation=45, ha='right')
         ax.legend()
-        ax.set_title('Топ 10 специальностей')
+        ax.set_title('Топ 10 специальностей по общему количеству мест')
+        ax.grid(True, linestyle='--', alpha=0.7)
+
+        for i, (curr, pred) in enumerate(zip(current, predicted)):
+            ax.text(i - 0.3, curr + 5, f'{curr:.0f}', ha='center')
+            ax.text(i + 0.3, pred + 5, f'{pred:.0f}', ha='center')
 
     def plot_distribution(self):
         ax = self.figure.add_subplot(111)
@@ -356,7 +456,8 @@ class GraphTab(wx.Panel):
             return
 
         changes = []
-        for i, row in self.main_frame.data[sorted(self.main_frame.data.keys())[-1]].iterrows():
+
+        for i, row in self.main_frame.data[sorted(self.main_frame.data.keys())[-1]].iloc[1:].iterrows():
             current = sum([row['budget'], row['target'], row['quota'], row['paid']])
             predicted = sum(self.main_frame.current_predictions[i])
             changes.append(predicted - current)
@@ -372,7 +473,7 @@ class GraphTab(wx.Panel):
         if self.main_frame.current_predictions is None:
             return
 
-        data = self.main_frame.data[sorted(self.main_frame.data.keys())[-1]]
+        data = self.main_frame.data[sorted(self.main_frame.data.keys())[-1]].iloc[1:]
         total_budget = data['budget'].sum()
         total_paid = data['paid'].sum()
 
@@ -399,7 +500,6 @@ class GraphTab(wx.Panel):
                 total = self.main_frame.data[year][['budget', 'target', 'quota', 'paid']].sum().sum()
                 trends.append(total)
 
-            # Преобразуем года в строки для корректного отображения
             str_years = [str(year) for year in years]
 
             ax.plot(str_years, trends, marker='o', linestyle='-', color='green')
@@ -432,11 +532,12 @@ class GraphTab(wx.Panel):
 class NeuralNetwork:
     def __init__(self, input_size, hidden_size=128, output_size=4):
         np.random.seed(42)
+
         self.W1 = np.random.randn(input_size, hidden_size) * np.sqrt(2. / input_size)
         self.b1 = np.zeros((1, hidden_size))
-        self.W2 = np.random.randn(hidden_size, hidden_size//2) * np.sqrt(2. / hidden_size)
-        self.b2 = np.zeros((1, hidden_size//2))
-        self.W3 = np.random.randn(hidden_size//2, output_size) * np.sqrt(2. / (hidden_size//2))
+        self.W2 = np.random.randn(hidden_size, hidden_size) * np.sqrt(2. / hidden_size)
+        self.b2 = np.zeros((1, hidden_size))
+        self.W3 = np.random.randn(hidden_size, output_size) * np.sqrt(2. / hidden_size)
         self.b3 = np.zeros((1, output_size))
         self.X_mean = None
         self.X_std = None
@@ -646,7 +747,6 @@ class MainFrame(wx.Frame):
         notebook.AddPage(self.graph_tab, "Графики")
         notebook.AddPage(self.history_tab, "История")
 
-
         # Главный сайзер
         main_sizer = wx.BoxSizer(wx.VERTICAL)
         main_sizer.Add(notebook, 1, wx.EXPAND | wx.ALL, 5)
@@ -742,11 +842,9 @@ class MainFrame(wx.Frame):
             self.history_tab.grid
         ]
 
-        # Привязка обработчика контекстного меню
         for grid in grids:
             grid.Bind(wx.EVT_CONTEXT_MENU, self.show_context_menu)
 
-            # Настройка внешнего вида
             grid.SetDefaultCellBackgroundColour(
                 THEMES[self.current_theme]['grid_bg']
             )
@@ -759,13 +857,10 @@ class MainFrame(wx.Frame):
         try:
             grid = event.GetEventObject()
 
-            # Создание меню
             menu = GridContextMenu(grid)
 
-            # Показ меню
             grid.PopupMenu(menu)
 
-            # Обновление после закрытия
             menu.Destroy()
             grid.ForceRefresh()
 
@@ -785,8 +880,16 @@ class MainFrame(wx.Frame):
         UpdateChecker(update_callback).start()
 
     def on_train(self, event):
-        if not self.data:
-            self.notifier.show_popup("Ошибка", "Нет данных для обучения", wx.ICON_ERROR)
+
+        has_main_data = hasattr(self, 'data') and len(self.data) >= 2
+        has_city_data = hasattr(self, 'city_data') and len(self.city_data) >= 2
+
+        if not has_main_data and not has_city_data:
+            self.notifier.show_popup("Ошибка",
+                                     "Для обучения нужно:\n"
+                                     "- Основные данные за 2+ года\n"
+                                     "- Или городские данные за 2+ года",
+                                     wx.ICON_ERROR)
             return
 
         self.loading_dialog = LoadingScreen(self)
@@ -794,20 +897,32 @@ class MainFrame(wx.Frame):
 
         def train_thread():
             try:
-                X, y = self.prepare_training_data()
-                print(f"[DEBUG] Training data shape - X: {X.shape}, y: {y.shape}")
 
-                self.nn = NeuralNetwork(
-                    input_size=X.shape[1],
-                    hidden_size=self.model_settings['hidden_size'],
-                    output_size=4
-                )
+                if has_main_data:
+                    X_main, y_main = self.prepare_main_training_data()
+                    print(f"[MAIN DATA] Training shape - X: {X_main.shape}, y: {y_main.shape}")
 
-                self.nn.train(
-                    X, y,
-                    epochs=self.model_settings['epochs'],
-                    lr=self.model_settings['learning_rate']
-                )
+                    self.nn_main = NeuralNetwork(
+                        input_size=X_main.shape[1],
+                        hidden_size=self.model_settings['hidden_size'],
+                        output_size=y_main.shape[1]
+                    )
+                    self.nn_main.train(X_main, y_main,
+                                       epochs=self.model_settings['epochs'],
+                                       lr=self.model_settings['learning_rate'])
+
+                if has_city_data:
+                    X_city, y_city = self.prepare_city_training_data()
+                    print(f"[CITY DATA] Training shape - X: {X_city.shape}, y: {y_city.shape}")
+
+                    self.nn_city = NeuralNetwork(
+                        input_size=X_city.shape[1],
+                        hidden_size=self.model_settings['hidden_size'],
+                        output_size=y_city.shape[1]
+                    )
+                    self.nn_city.train(X_city, y_city,
+                                       epochs=self.model_settings['epochs'],
+                                       lr=self.model_settings['learning_rate'])
 
                 wx.CallAfter(self._training_finished)
 
@@ -815,12 +930,52 @@ class MainFrame(wx.Frame):
                 error_msg = f"Ошибка обучения: {str(e)}"
                 print(f"[ERROR] {error_msg}")
                 wx.CallAfter(self._training_failed, error_msg)
-
             finally:
                 wx.CallAfter(self._cleanup_loading_dialog)
 
-        print("[DEBUG] Starting training thread...")
         threading.Thread(target=train_thread, daemon=True).start()
+
+    def prepare_main_training_data(self):
+        """Подготовка данных по специальностям (4 колонки)"""
+        if len(self.data) < 2:
+            raise ValueError("Нужны основные данные за 2+ года")
+
+        features, targets = [], []
+        years = sorted(self.data.keys())
+
+        for i in range(len(years) - 1):
+            current = self.data[years[i]]
+            next_year = self.data[years[i + 1]]
+
+            merged = pd.merge(current, next_year, on='specialty',
+                              suffixes=('_current', '_next'))
+
+            features.append(merged[['budget_current', 'target_current',
+                                    'quota_current', 'paid_current']].values)
+            targets.append(merged[['budget_next', 'target_next',
+                                   'quota_next', 'paid_next']].values)
+
+        return np.vstack(features), np.vstack(targets)
+
+    def prepare_city_training_data(self):
+        """Подготовка городских данных (2 колонки)"""
+        if len(self.city_data) < 2:
+            raise ValueError("Нужны городские данные за 2+ года")
+
+        features, targets = [], []
+        years = sorted(self.city_data.keys())
+
+        for i in range(len(years) - 1):
+            current = self.city_data[years[i]]
+            next_year = self.city_data[years[i + 1]]
+
+            merged = pd.merge(current, next_year, on='city',
+                              suffixes=('_current', '_next'))
+
+            features.append(merged[['full_time_current', 'part_time_current']].values)
+            targets.append(merged[['full_time_next', 'part_time_next']].values)
+
+        return np.vstack(features), np.vstack(targets)
 
     def _training_finished(self):
         self.notifier.show_status("Обучение завершено успешно")
@@ -836,49 +991,51 @@ class MainFrame(wx.Frame):
             self.loading_dialog = None
 
     def on_predict(self, event):
-        # Проверка на наличие обученной модели
-        if self.nn is None:
-            self.notifier.show_popup("Ошибка", "Сначала обучите модель!", wx.ICON_ERROR)
-            return
-
-        # Улучшенная валидация данных
-        errors = DataValidator.validate_grid(self.input_tab.grid)
-        if errors:
-            self.notifier.show_popup("Ошибка данных",
-                                     f"Найдено {len(errors)} невалидных значений!\nПроверьте выделенные ячейки.",
-                                     wx.ICON_ERROR)
-            return
-
         try:
-            latest_year = sorted(self.data.keys())[-1]
-            df = self.data[latest_year]
+            # Прогнозирование для основных данных
+            if hasattr(self, 'nn_main') and hasattr(self, 'data'):
+                latest_year = sorted(self.data.keys())[-1]
+                X_main = self.data[latest_year][['budget', 'target', 'quota', 'paid']].values
+                self.current_predictions = self.nn_main.predict(X_main)
 
-            # Проверка наличия необходимых колонок
-            required_columns = ['budget', 'target', 'quota', 'paid']
-            if not all(col in df.columns for col in required_columns):
-                raise ValueError("Отсутствуют необходимые колонки в данных")
+            # Прогнозирование для городских данных
+            if hasattr(self, 'nn_city') and hasattr(self, 'city_data'):
+                latest_year = sorted(self.city_data.keys())[-1]
+                X_city = self.city_data[latest_year][['full_time', 'part_time']].values
+                self.current_city_predictions = self.nn_city.predict(X_city)
 
-            X = df[required_columns].values
-
-            # Выполнение предсказания
-            predictions = self.nn.predict(X)
-
-            # Сохранение и отображение результатов
-            self.current_predictions = np.maximum(np.floor(predictions), 0).astype(int)
-
-            # Обновление интерфейса
-            wx.CallAfter(self.prediction_tab.update_predictions, df, self.current_predictions)
-            wx.CallAfter(self.graph_tab.update_graphs)
-            wx.CallAfter(self.update_history, df)
-            wx.CallAfter(self.update_risk_analysis)
-
-            self.notifier.show_status("Прогноз успешно сгенерирован")
+            wx.CallAfter(self._update_predictions_display)
 
         except Exception as e:
-            # Обработка ошибок
-            error_msg = f"Ошибка прогнозирования: {str(e)}"
-            print(f"DEBUG: {error_msg}")  # Логирование
-            self.notifier.show_popup("Ошибка", error_msg, wx.ICON_ERROR)
+            self.notifier.show_popup("Ошибка", f"Ошибка прогнозирования: {str(e)}", wx.ICON_ERROR)
+
+    def _update_predictions_display(self):
+        if hasattr(self, 'prediction_tab'):
+            if self.prediction_tab.current_mode == 'main' and hasattr(self, 'current_predictions'):
+                latest_year = sorted(self.data.keys())[-1]
+                current_data = self.data[latest_year]
+                self.prediction_tab.update_predictions(
+                    current_data,
+                    self.current_predictions
+                )
+
+                self.update_history(current_data, self.current_predictions, 'specialty')
+
+            elif self.prediction_tab.current_mode == 'city' and hasattr(self, 'current_city_predictions'):
+                latest_year = sorted(self.city_data.keys())[-1]
+                current_data = self.city_data[latest_year]
+                self.prediction_tab.update_city_predictions(
+                    current_data,
+                    self.current_city_predictions
+                )
+
+                self.update_history(current_data, self.current_city_predictions, 'city')
+
+        if hasattr(self, 'graph_tab'):
+            self.graph_tab.update_graphs()
+
+        if hasattr(self, 'graph_tab'):
+            self.graph_tab.update_graphs()
 
     def prepare_training_data(self):
         if len(self.data) < 2:
@@ -917,19 +1074,39 @@ class MainFrame(wx.Frame):
                     risks[row['specialty']] = "Средний масштаб изменений"
             self.risk_tab.update_risks(risks)
 
+    def update_history(self, data, predictions, data_type='specialty'):
+        """Сохраняет результаты прогнозирования в историю"""
+        if not hasattr(self, 'history'):
+            self.history = []  # Инициализируем список истории, если его нет
 
-    def update_history(self, df):
-        history_data = []
-        if self.current_predictions is not None:
-            for i, row in df.iterrows():
-                history_data.append({
-                    'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M"),
-                    'specialty': row['specialty'],
-                    'prediction': sum(self.current_predictions[i]),
-                    'status': "Успешно" if all(x >= 0 for x in self.current_predictions[i]) else "Ошибка"
-                })
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+        if data_type == 'specialty':
+            for i, row in data.iterrows():
+                if i < len(predictions):
+                    self.history.append({
+                        'timestamp': timestamp,
+                        'type': 'specialty',
+                        'name': row['specialty'],
+                        'prediction': sum(predictions[i]),
+                        'status': "Успешно" if all(x >= 0 for x in predictions[i]) else "Ошибка"
+                    })
+        else:  # city data
+            for i, row in data.iterrows():
+                if i < len(predictions):
+                    self.history.append({
+                        'timestamp': timestamp,
+                        'type': 'city',
+                        'name': row['city'],
+                        'prediction': f"{predictions[i][0]} (оч.), {predictions[i][1]} (заоч.)",
+                        'status': "Успешно" if all(x >= 0 for x in predictions[i]) else "Ошибка"
+                    })
+
+        if len(self.history) > 100:
+            self.history = self.history[-100:]
+
         if hasattr(self, 'history_tab'):
-            self.history_tab.update_history(history_data)
+            wx.CallAfter(self.history_tab.update_history_display)
 
     def show_settings(self, event):
         if self.nn:
@@ -965,7 +1142,6 @@ class MainFrame(wx.Frame):
                 wx.MessageBox("Риски не обнаружены!", "Информация", wx.OK | wx.ICON_INFORMATION)
         else:
             wx.MessageBox("Нет данных для анализа!", "Ошибка", wx.OK | wx.ICON_WARNING)
-
 
     def show_help(self, event):
         HelpWindow(self)
@@ -1009,15 +1185,29 @@ class InputTab(wx.Panel):
         self.init_ui()
 
     def init_ui(self):
+        self.notebook = wx.Notebook(self)
+
+        self.main_tab = self.create_main_tab()
+        self.city_tab = self.create_city_tab()
+
+        self.notebook.AddPage(self.main_tab, "Основные данные")
+        self.notebook.AddPage(self.city_tab, "Данные по городам")
+
+        vbox = wx.BoxSizer(wx.VERTICAL)
+        vbox.Add(self.notebook, 1, wx.EXPAND)
+        self.SetSizer(vbox)
+
+    def create_main_tab(self):
+        panel = wx.Panel(self.notebook)
         vbox = wx.BoxSizer(wx.VERTICAL)
 
         hbox = wx.BoxSizer(wx.HORIZONTAL)
-        self.year_entry = wx.TextCtrl(self, size=(140, -1))
-        btn_paste = wx.Button(self, label="Вставить из Excel", size=(160, 32))
-        btn_save = wx.Button(self, label="Сохранить данные", size=(160, 32))
-        btn_clear = wx.Button(self, label="Очистить таблицу", size=(160, 32))
-        btn_settings = wx.Button(self, label="Настройки", size=(160, 32))  # Новая кнопка
-        btn_manual = wx.Button(self, label="Руководство", size=(160, 32))
+        self.year_entry = wx.TextCtrl(panel, size=(140, -1))
+        btn_paste = wx.Button(panel, label="Вставить из Excel", size=(160, 32))
+        btn_save = wx.Button(panel, label="Сохранить данные", size=(160, 32))
+        btn_clear = wx.Button(panel, label="Очистить таблицу", size=(160, 32))
+        btn_settings = wx.Button(panel, label="Настройки", size=(160, 32))
+        btn_manual = wx.Button(panel, label="Руководство", size=(160, 32))
 
         hbox.Add(self.year_entry, 0, wx.RIGHT, 20)
         hbox.Add(btn_paste, 0, wx.RIGHT, 10)
@@ -1026,13 +1216,13 @@ class InputTab(wx.Panel):
         hbox.Add(btn_settings, 0, wx.RIGHT, 10)
         hbox.Add(btn_manual, 0)
 
-        self.grid = gridlib.Grid(self)
+        self.grid = gridlib.Grid(panel)
         self.grid.CreateGrid(0, 5)
-        self.setup_columns()
+        self.setup_main_columns()
 
         vbox.Add(hbox, 0, wx.EXPAND | wx.ALL, 10)
         vbox.Add(self.grid, 1, wx.EXPAND)
-        self.SetSizer(vbox)
+        panel.SetSizer(vbox)
 
         btn_paste.Bind(wx.EVT_BUTTON, self.on_paste)
         btn_save.Bind(wx.EVT_BUTTON, self.on_save)
@@ -1040,8 +1230,38 @@ class InputTab(wx.Panel):
         btn_settings.Bind(wx.EVT_BUTTON, self.show_settings)
         btn_manual.Bind(wx.EVT_BUTTON, self.show_manual)
 
-    def setup_columns(self):
+        return panel
 
+    def create_city_tab(self):
+        panel = wx.Panel(self.notebook)
+        vbox = wx.BoxSizer(wx.VERTICAL)
+
+        hbox = wx.BoxSizer(wx.HORIZONTAL)
+        self.city_year_entry = wx.TextCtrl(panel, size=(140, -1))
+        btn_city_paste = wx.Button(panel, label="Вставить из Excel", size=(160, 32))
+        btn_city_save = wx.Button(panel, label="Сохранить данные", size=(160, 32))
+        btn_city_clear = wx.Button(panel, label="Очистить таблицу", size=(160, 32))
+
+        hbox.Add(self.city_year_entry, 0, wx.RIGHT, 20)
+        hbox.Add(btn_city_paste, 0, wx.RIGHT, 10)
+        hbox.Add(btn_city_save, 0, wx.RIGHT, 10)
+        hbox.Add(btn_city_clear, 0)
+
+        self.city_grid = gridlib.Grid(panel)
+        self.city_grid.CreateGrid(0, 3)
+        self.setup_city_columns()
+
+        vbox.Add(hbox, 0, wx.EXPAND | wx.ALL, 10)
+        vbox.Add(self.city_grid, 1, wx.EXPAND)
+        panel.SetSizer(vbox)
+
+        btn_city_paste.Bind(wx.EVT_BUTTON, self.on_city_paste)
+        btn_city_save.Bind(wx.EVT_BUTTON, self.on_city_save)
+        btn_city_clear.Bind(wx.EVT_BUTTON, self.on_city_clear)
+
+        return panel
+
+    def setup_main_columns(self):
         theme = THEMES[self.GetTopLevelParent().current_theme]
         self.grid.SetDefaultCellBackgroundColour(theme["grid_bg"])
         self.grid.SetDefaultCellTextColour(theme["grid_text"])
@@ -1058,6 +1278,21 @@ class InputTab(wx.Panel):
             self.grid.SetColSize(col, width)
         self.grid.DisableDragColSize()
 
+    def setup_city_columns(self):
+        theme = THEMES[self.GetTopLevelParent().current_theme]
+        self.city_grid.SetDefaultCellBackgroundColour(theme["grid_bg"])
+        self.city_grid.SetDefaultCellTextColour(theme["grid_text"])
+
+        columns = [
+            ("Город", 300),
+            ("Очное отделение", 200),
+            ("Заочное отделение", 200)
+        ]
+        for col, (label, width) in enumerate(columns):
+            self.city_grid.SetColLabelValue(col, label)
+            self.city_grid.SetColSize(col, width)
+        self.city_grid.DisableDragColSize()
+
     def on_paste(self, event):
         clipboard = wx.Clipboard.Get()
         if clipboard.Open():
@@ -1067,6 +1302,34 @@ class InputTab(wx.Panel):
             clipboard.Close()
             DataValidator.validate_grid(self.grid)
 
+    def on_city_paste(self, event):
+        clipboard = wx.Clipboard.Get()
+        if clipboard.Open():
+            data_obj = wx.TextDataObject()
+            if clipboard.GetData(data_obj):
+                clipboard_data = data_obj.GetText()
+                rows = [row.split('\t') for row in clipboard_data.split('\n') if row.strip()]
+
+                if self.city_grid.GetNumberRows() > 0:
+                    self.city_grid.DeleteRows(0, self.city_grid.GetNumberRows())
+
+                if rows:
+                    self.city_grid.AppendRows(len(rows))
+
+                    for row_idx, row in enumerate(rows):
+                        for col_idx, value in enumerate(row[:3]):  # Берем только первые 3 колонки
+                            if row_idx < self.city_grid.GetNumberRows() and col_idx < self.city_grid.GetNumberCols():
+                                self.city_grid.SetCellValue(row_idx, col_idx, value.strip())
+
+                errors = DataValidator.validate_grid(self.city_grid)
+                if errors:
+                    wx.MessageBox(
+                        f"Найдено {len(errors)} невалидных значений!\nПервая ошибка: {errors[0]}",
+                        "Внимание", wx.OK | wx.ICON_WARNING
+                    )
+
+            clipboard.Close()
+
     def on_save(self, event):
         year = self.year_entry.GetValue().strip()
         if not year:
@@ -1074,25 +1337,106 @@ class InputTab(wx.Panel):
             return
 
         data = []
+        warnings = []
+        errors = []
+
         for row in range(self.grid.GetNumberRows()):
-            specialty = self.grid.GetCellValue(row, 0)
+            specialty = self.grid.GetCellValue(row, 0).strip()
             if not specialty:
-                continue
+                continue  # Пропускаем пустые строки
+
+            values = []
+            for col in range(1, 5):
+                try:
+                    value_str = self.grid.GetCellValue(row, col).strip()
+                    if not value_str:  # Если ячейка пустая
+                        values.append(0.0)
+                        continue
+
+                    value = float(value_str.replace(',', '.'))
+                    if value < 0:
+                        errors.append(f"Строка {row + 1}: Отрицательное значение в колонке {col + 1}")
+                    values.append(value)
+                except ValueError:
+                    errors.append(f"Строка {row + 1}: Некорректное число в колонке {col + 1}")
+                    values.append(0.0)  # Заменяем на 0 при ошибке
+
+            # Проверка суммы мест (теперь как предупреждение, а не ошибка)
+            total = sum(values)
+            if total == 0:
+                warnings.append(f"Строка {row + 1}: Общее количество мест равно нулю")
 
             data.append({
                 'specialty': specialty,
-                'budget': self.parse_number(self.grid.GetCellValue(row, 1)),
-                'target': self.parse_number(self.grid.GetCellValue(row, 2)),
-                'quota': self.parse_number(self.grid.GetCellValue(row, 3)),
-                'paid': self.parse_number(self.grid.GetCellValue(row, 4))
+                'budget': values[0],
+                'target': values[1],
+                'quota': values[2],
+                'paid': values[3],
+                'total': total
             })
 
+        # Сначала показываем критические ошибки
+        if errors:
+            wx.MessageBox("Критические ошибки:\n" + "\n".join(errors[:5]) +
+                          ("\n\n...и другие ошибки" if len(errors) > 5 else ""),
+                          "Ошибки в данных", wx.OK | wx.ICON_ERROR)
+            return
+
+        # Затем предупреждения о нулевых значениях
+        if warnings:
+            response = wx.MessageBox(
+                "Обнаружены специальности с нулевым количеством мест:\n" +
+                "\n".join(warnings[:5]) +
+                ("\n\n...и другие предупреждения" if len(warnings) > 5 else "") +
+                "\n\nПродолжить сохранение?",
+                "Внимание", wx.OK | wx.CANCEL | wx.ICON_WARNING)
+
+            if response != wx.OK:
+                return
+
+        # Сохраняем данные
         self.main_frame.data[year] = pd.DataFrame(data)
-        wx.MessageBox(f"Данные за {year} год сохранены!", "Успех", wx.OK | wx.ICON_INFORMATION)
+
+        # Формируем итоговое сообщение
+        message = f"Данные за {year} год сохранены!\n\n"
+        message += f"Специальностей: {len(data)}\n"
+        message += f"Всего мест: {sum(d['total'] for d in data)}\n"
+        if warnings:
+            message += f"\nПредупреждений: {len(warnings)}"
+
+        wx.MessageBox(message, "Успех", wx.OK | wx.ICON_INFORMATION)
+
+    def on_city_save(self, event):
+        year = self.city_year_entry.GetValue().strip()
+        if not year:
+            wx.MessageBox("Введите год данных", "Ошибка", wx.OK | wx.ICON_ERROR)
+            return
+
+        data = []
+        for row in range(self.city_grid.GetNumberRows()):
+            city = self.city_grid.GetCellValue(row, 0)
+            if not city:
+                continue
+
+            data.append({
+                'city': city,
+                'full_time': self.parse_number(self.city_grid.GetCellValue(row, 1)),
+                'part_time': self.parse_number(self.city_grid.GetCellValue(row, 2))
+            })
+
+        if not hasattr(self.main_frame, 'city_data'):
+            self.main_frame.city_data = {}
+
+        self.main_frame.city_data[year] = pd.DataFrame(data)
+        wx.MessageBox(f"Городские данные за {year} год сохранены!", "Успех", wx.OK | wx.ICON_INFORMATION)
 
     def on_clear(self, event):
         if self.grid.GetNumberRows() > 0:
             self.grid.DeleteRows(0, self.grid.GetNumberRows())
+
+    def on_city_clear(self, event):
+        if self.city_grid.GetNumberRows() > 0:
+            self.city_grid.DeleteRows(0, self.city_grid.GetNumberRows())
 
     def parse_number(self, value):
         try:
@@ -1110,6 +1454,17 @@ class InputTab(wx.Panel):
             self.grid.AppendRows(1)
             for col_idx, value in enumerate(row[:5]):
                 self.grid.SetCellValue(row_idx, col_idx, value.strip())
+
+    def load_city_data(self, clipboard_data):
+        rows = [row.split('\t') for row in clipboard_data.split('\n') if row.strip()]
+        self.city_grid.ClearGrid()
+        if self.city_grid.GetNumberRows() > 0:
+            self.city_grid.DeleteRows(0, self.city_grid.GetNumberRows())
+
+        for row_idx, row in enumerate(rows):
+            self.city_grid.AppendRows(1)
+            for col_idx, value in enumerate(row[:3]):
+                self.city_grid.SetCellValue(row_idx, col_idx, value.strip())
 
     def show_manual(self, event):
         dlg = UserManualDialog(self)
@@ -1186,9 +1541,9 @@ class FuturePredictionTab(wx.Panel):
 
         if platform.system() == 'Darwin':
             self.grid.SetLabelFont(wx.Font(13, wx.FONTFAMILY_DEFAULT,
-                                         wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
+                                           wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
             self.grid.SetDefaultCellFont(wx.Font(13, wx.FONTFAMILY_DEFAULT,
-                                              wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
+                                                 wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
 
     def setup_columns(self):
         columns = [
@@ -1218,7 +1573,7 @@ class FuturePredictionTab(wx.Panel):
     def on_export_excel(self, event):
         df = self.get_grid_data()
         with wx.FileDialog(self, "Сохранить Excel", wildcard="Excel files (*.xlsx)|*.xlsx",
-                         style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT) as fd:
+                           style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT) as fd:
             if fd.ShowModal() == wx.ID_CANCEL:
                 return
             df.to_excel(fd.GetPath(), index=False)
@@ -1379,36 +1734,66 @@ class HistoryTab(wx.Panel):
     def init_ui(self):
         vbox = wx.BoxSizer(wx.VERTICAL)
 
+        # Добавляем переключатель типа истории
+        self.history_type = wx.Choice(self, choices=["Все прогнозы", "По специальностям", "По городам"])
+        self.history_type.SetSelection(0)
+        self.history_type.Bind(wx.EVT_CHOICE, self.update_history_display)
+
+        # Таблица истории
         self.grid = gridlib.Grid(self)
-        self.grid.CreateGrid(0, 4)  # Добавляем колонку для даты
+        self.grid.CreateGrid(0, 5)  # Дата, Тип, Название, Прогноз, Статус
         self.setup_columns()
 
+        vbox.Add(self.history_type, 0, wx.EXPAND | wx.ALL, 5)
         vbox.Add(self.grid, 1, wx.EXPAND | wx.ALL, 5)
         self.SetSizer(vbox)
 
     def setup_columns(self):
         columns = [
-            ("Дата", 200),
-            ("Специальность", 300),
+            ("Дата", 150),
+            ("Тип данных", 120),
+            ("Название", 250),
             ("Прогноз", 150),
             ("Статус", 100)
         ]
         for col, (label, width) in enumerate(columns):
             self.grid.SetColLabelValue(col, label)
             self.grid.SetColSize(col, width)
-        self.grid.DisableDragColSize()
 
-    def update_history(self, history_data):
+    def update_history_display(self, event=None):
+        """Обновляет отображение истории в соответствии с выбранным фильтром"""
+        if not hasattr(self.main_frame, 'history'):
+            return
+
         self.grid.ClearGrid()
         if self.grid.GetNumberRows() > 0:
             self.grid.DeleteRows(0, self.grid.GetNumberRows())
 
-        for i, entry in enumerate(history_data):
+        filter_type = self.history_type.GetSelection()  # 0-все, 1-специальности, 2-города
+
+        row = 0
+        for item in reversed(self.main_frame.history):
+            # Применяем фильтр
+            if filter_type == 1 and item['type'] != 'specialty':
+                continue
+            if filter_type == 2 and item['type'] != 'city':
+                continue
+
             self.grid.AppendRows(1)
-            self.grid.SetCellValue(i, 0, entry['timestamp'])
-            self.grid.SetCellValue(i, 1, entry['specialty'])
-            self.grid.SetCellValue(i, 2, str(entry['prediction']))
-            self.grid.SetCellValue(i, 3, entry['status'])
+            self.grid.SetCellValue(row, 0, item['timestamp'])
+            self.grid.SetCellValue(row, 1, "Специальности" if item['type'] == 'specialty' else "Города")
+            self.grid.SetCellValue(row, 2, item['name'])
+            self.grid.SetCellValue(row, 3, str(item['prediction']))
+            self.grid.SetCellValue(row, 4, item['status'])
+
+            # Подсветка строки в зависимости от статуса
+            if item['status'] == "Ошибка":
+                for col in range(5):
+                    self.grid.SetCellBackgroundColour(row, col, wx.Colour(255, 200, 200))
+            row += 1
+
+        self.grid.AutoSizeColumns()
+        self.grid.ForceRefresh()
 
 
 # =================================
@@ -1428,7 +1813,6 @@ class RiskAnalyzer:
                     'indicators': negative_count
                 })
         return pd.DataFrame(risks)
-
 
 
 # =================================
@@ -1732,6 +2116,7 @@ class UserManualDialog(wx.Dialog):
 
         notebook.AddPage(panel, title)
 
+
 # =================================
 # HelpWindow
 # =================================
@@ -1970,14 +2355,38 @@ class DataValidator:
     @staticmethod
     def validate_grid(grid):
         errors = []
-        for row in range(grid.GetNumberRows()):
-            for col in range(1, 5):
-                value = grid.GetCellValue(row, col)
-                if not value.isdigit():
-                    grid.SetCellBackgroundColour(row, col, wx.RED)
-                    errors.append(f"Row {row + 1}, Col {col + 1}: Invalid number")
+        rows = grid.GetNumberRows()
+        cols = grid.GetNumberCols()
+
+        # Проверяем, что таблица не пустая
+        if rows == 0 or cols == 0:
+            return ["Таблица пуста"]
+
+        for row in range(rows):
+            for col in range(cols):
+                # Для городских данных проверяем только числовые колонки (1 и 2)
+                if col in (1, 2):
+                    try:
+                        value = grid.GetCellValue(row, col)
+                        if not value.strip():  # Пустая строка
+                            grid.SetCellBackgroundColour(row, col, wx.RED)
+                            errors.append(f"Строка {row + 1}, Колонка {col + 1}: Пустое значение")
+                            continue
+
+                        # Пробуем преобразовать в число
+                        float(value.replace(',', '.'))
+                        grid.SetCellBackgroundColour(row, col, wx.WHITE)
+                    except:
+                        grid.SetCellBackgroundColour(row, col, wx.RED)
+                        errors.append(f"Строка {row + 1}, Колонка {col + 1}: Некорректное число")
                 else:
-                    grid.SetCellBackgroundColour(row, col, wx.WHITE)
+                    # Для нечисловых колонок просто проверяем, что не пустые
+                    if not grid.GetCellValue(row, col).strip():
+                        grid.SetCellBackgroundColour(row, col, wx.RED)
+                        errors.append(f"Строка {row + 1}, Колонка {col + 1}: Пустое значение")
+                    else:
+                        grid.SetCellBackgroundColour(row, col, wx.WHITE)
+
         grid.ForceRefresh()
         return errors
 
@@ -2122,10 +2531,10 @@ class SettingsTab(wx.Panel):
         self.learning_rate.SetValue("0.0001")
         wx.MessageBox("Настройки сброшены к значениям по умолчанию", "Информация", wx.OK | wx.ICON_INFORMATION)
 
-
         # =================================
         # Export Handlers
         # =================================
+
 
 def export_to_excel(data, filename):
     """Экспорт данных в Excel файл"""
