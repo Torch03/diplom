@@ -188,11 +188,18 @@ class PredictionTab(wx.Panel):
             if required_rows > 0:
                 self.grid.AppendRows(required_rows)
 
-            # Рассчитываем показатели
+            # Рассчитываем показатели с защитой от деления на ноль
             data['total_current'] = data[['budget', 'target', 'quota', 'paid']].sum(axis=1)
             data['total_predicted'] = [sum(pred) for pred in predictions]
             data['change_abs'] = data['total_predicted'] - data['total_current']
-            data['change_pct'] = (data['change_abs'] / data['total_current'] * 100).fillna(0)
+
+            # Расчет процентного изменения с защитой от деления на ноль
+            data['change_pct'] = np.where(
+                data['total_current'] > 0,
+                (data['change_abs'] / data['total_current'] * 100),
+                0  # Если total_current == 0, процент изменения = 0%
+            )
+
             data['trend'] = np.where(data['change_abs'] >= 0, '▲ Рост', '▼ Снижение')
 
             # Заполняем таблицу
@@ -203,7 +210,14 @@ class PredictionTab(wx.Panel):
                 self.grid.SetCellValue(idx, 0, str(row['specialty']))
                 self.grid.SetCellValue(idx, 1, f"{row['total_current']:.0f}")
                 self.grid.SetCellValue(idx, 2, f"{row['total_predicted']:.0f}")
-                self.grid.SetCellValue(idx, 3, f"{row['change_pct']:.1f}%")
+
+                # Форматирование процентного изменения
+                change_pct = row['change_pct']
+                if math.isinf(change_pct):
+                    self.grid.SetCellValue(idx, 3, "N/A")
+                else:
+                    self.grid.SetCellValue(idx, 3, f"{change_pct:.1f}%")
+
                 self.grid.SetCellValue(idx, 4, f"{row['change_abs']:.0f}")
                 self.grid.SetCellValue(idx, 5, row['trend'])
 
@@ -556,35 +570,82 @@ class NeuralNetwork:
         return self.z3
 
     def train(self, X, y, epochs=2000, lr=0.0001, batch_size=64, progress_callback=None):
+        # Нормализация данных
         self.X_mean = X.mean(axis=0)
-        self.X_std = X.std(axis=0) + 1e-8
+        self.X_std = X.std(axis=0) + 1e-8  # Добавляем небольшое значение для стабильности
         self.y_mean = y.mean(axis=0)
         self.y_std = y.std(axis=0) + 1e-8
 
         X_norm = (X - self.X_mean) / self.X_std
         y_norm = (y - self.y_mean) / self.y_std
 
+        # Разделение на обучающую и валидационную выборки
         split_idx = int(0.8 * X.shape[0])
         X_train, X_val = X_norm[:split_idx], X_norm[split_idx:]
         y_train, y_val = y_norm[:split_idx], y_norm[split_idx:]
 
         best_loss = float('inf')
+        best_weights = None
+        patience = 20
+        patience_counter = 0
+
+        train_losses = []
+        val_losses = []
+
         for epoch in range(epochs):
             train_loss = self._train_batch(X_train, y_train, lr, batch_size)
             val_loss = self._validate(X_val, y_val)
 
-            if epoch % 100 == 0:
-                print(f"Epoch {epoch:4d} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}")
+            train_losses.append(train_loss)
+            val_losses.append(val_loss)
 
-            if progress_callback and epoch % 10 == 0:
-                progress = int((epoch / epochs) * 100)
-                progress_callback(progress, f"Epoch {epoch}/{epochs}")
-
+            # Ранняя остановка
             if val_loss < best_loss:
                 best_loss = val_loss
-            elif val_loss > best_loss * 1.1:
-                print("Early stopping")
-                break
+                best_weights = {
+                    'W1': self.W1.copy(),
+                    'b1': self.b1.copy(),
+                    'W2': self.W2.copy(),
+                    'b2': self.b2.copy(),
+                    'W3': self.W3.copy(),
+                    'b3': self.b3.copy()
+                }
+                patience_counter = 0
+            else:
+                patience_counter += 1
+                if patience_counter >= patience:
+                    print(f"Early stopping at epoch {epoch}")
+                    break
+
+            if epoch % 100 == 0 or epoch == epochs - 1:
+                # Расчет accuracy
+                val_predictions = self.predict(X[split_idx:])
+                accuracy = self.calculate_accuracy(val_predictions, y[split_idx:])
+
+                print(
+                    f"Epoch {epoch:4d} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | Accuracy: {accuracy:.1f}%")
+
+                if progress_callback:
+                    progress = int((epoch / epochs) * 100)
+                    progress_callback(progress, f"Epoch {epoch}/{epochs} | Accuracy: {accuracy:.1f}%")
+
+        # Восстанавливаем лучшие веса
+        if best_weights:
+            self.W1 = best_weights['W1']
+            self.b1 = best_weights['b1']
+            self.W2 = best_weights['W2']
+            self.b2 = best_weights['b2']
+            self.W3 = best_weights['W3']
+            self.b3 = best_weights['b3']
+
+        # Возвращаем историю обучения для визуализации
+        return train_losses, val_losses
+
+    def calculate_accuracy(self, predictions, true_values):
+        """Вычисляет точность модели (процент предсказаний в пределах 10% от истинных значений)"""
+        relative_error = np.abs(predictions - true_values) / (true_values + 1e-8)
+        accuracy = np.mean(relative_error < 0.1) * 100
+        return accuracy
 
     def _train_batch(self, X, y, lr, batch_size):
         indices = np.arange(X.shape[0])
@@ -626,9 +687,16 @@ class NeuralNetwork:
         return np.mean((output - y) ** 2)
 
     def predict(self, X):
-        X_norm = (X - self.X_mean) / self.X_std
+        """Предсказание с защитой от отрицательных значений"""
+        X_norm = (X - self.X_mean) / (self.X_std + 1e-8)  # Добавляем небольшое значение для стабильности
         y_norm = self.forward(X_norm)
-        return y_norm * self.y_std + self.y_mean
+        predictions = y_norm * self.y_std + self.y_mean
+
+        # Заменяем отрицательные значения на 0 и округляем до целых
+        predictions = np.round(predictions)
+        predictions[predictions < 0] = 0
+
+        return predictions
 
     def get_architecture(self):
         return {
@@ -690,6 +758,7 @@ class LoadingScreen(wx.Dialog):
 class MainFrame(wx.Frame):
     def __init__(self):
         super().__init__(None, title="University Analytics", size=(1200, 800))
+        self.models_loaded = False
         self.loading_dialog = None
         self.nn = None
         self.data = {}
@@ -756,11 +825,15 @@ class MainFrame(wx.Frame):
         toolbar = self.CreateToolBar()
         train_tool = toolbar.AddTool(wx.ID_ANY, "Обучить", wx.ArtProvider.GetBitmap(wx.ART_PLUS))
         predict_tool = toolbar.AddTool(wx.ID_ANY, "Прогноз", wx.ArtProvider.GetBitmap(wx.ART_FIND))
+        save_tool = toolbar.AddTool(wx.ID_ANY, "Сохранить модель", wx.ArtProvider.GetBitmap(wx.ART_FILE_SAVE))
+        load_tool = toolbar.AddTool(wx.ID_ANY, "Загрузить модель", wx.ArtProvider.GetBitmap(wx.ART_FILE_OPEN))
         toolbar.Realize()
 
         # Привязка событий тулбара
         self.Bind(wx.EVT_TOOL, self.on_train, train_tool)
         self.Bind(wx.EVT_TOOL, self.on_predict, predict_tool)
+        self.Bind(wx.EVT_TOOL, self.save_models, save_tool)
+        self.Bind(wx.EVT_TOOL, self.load_models, load_tool)
 
         # Убрать повторное создание статусной строки
         panel.Layout()
@@ -782,6 +855,10 @@ class MainFrame(wx.Frame):
         file_menu = wx.Menu()
         create_menu_item(file_menu, "Открыть проект\tCtrl+O", self.on_open)
         create_menu_item(file_menu, "Сохранить проект\tCtrl+S", self.on_save)
+        file_menu.AppendSeparator()
+        create_menu_item(file_menu, "Сохранить модель\tCtrl+Shift+S", self.save_models)
+        create_menu_item(file_menu, "Загрузить модель\tCtrl+Shift+O", self.load_models)
+
         file_menu.AppendSeparator()
         create_menu_item(file_menu, "Выход", self.on_exit)
         self.menubar.Append(file_menu, "&Файл")
@@ -895,6 +972,9 @@ class MainFrame(wx.Frame):
         self.loading_dialog = LoadingScreen(self)
         self.notifier.show_status("Начато обучение модели...")
 
+        self.models_loaded = True
+        self.notifier.show_status("Модели обучены и готовы к прогнозированию", 3000)
+
         def train_thread():
             try:
 
@@ -991,25 +1071,40 @@ class MainFrame(wx.Frame):
             self.loading_dialog = None
 
     def on_predict(self, event):
+        """Выполняет прогноз с проверкой загруженных моделей"""
+        # Проверяем наличие хотя бы одной модели
+        if not getattr(self, 'models_loaded', False):
+            wx.MessageBox("Сначала загрузите или обучите модель!", "Ошибка", wx.OK | wx.ICON_ERROR)
+            return
+
         try:
             # Прогнозирование для основных данных
-            if hasattr(self, 'nn_main') and hasattr(self, 'data'):
+            if hasattr(self, 'nn_main') and hasattr(self, 'data') and len(self.data) > 0:
                 latest_year = sorted(self.data.keys())[-1]
                 X_main = self.data[latest_year][['budget', 'target', 'quota', 'paid']].values
                 self.current_predictions = self.nn_main.predict(X_main)
+                print("Прогноз для основных данных выполнен")
 
             # Прогнозирование для городских данных
-            if hasattr(self, 'nn_city') and hasattr(self, 'city_data'):
+            if hasattr(self, 'nn_city') and hasattr(self, 'city_data') and len(self.city_data) > 0:
                 latest_year = sorted(self.city_data.keys())[-1]
                 X_city = self.city_data[latest_year][['full_time', 'part_time']].values
                 self.current_city_predictions = self.nn_city.predict(X_city)
+                print("Прогноз для городских данных выполнен")
 
+            # Обновляем интерфейс
             wx.CallAfter(self._update_predictions_display)
 
         except Exception as e:
-            self.notifier.show_popup("Ошибка", f"Ошибка прогнозирования: {str(e)}", wx.ICON_ERROR)
+            error_msg = f"Ошибка прогнозирования: {str(e)}"
+            print(error_msg)
+            self.notifier.show_popup("Ошибка", error_msg, wx.ICON_ERROR)
 
     def _update_predictions_display(self):
+
+        if not self.models_loaded:
+            return
+
         if hasattr(self, 'prediction_tab'):
             if self.prediction_tab.current_mode == 'main' and hasattr(self, 'current_predictions'):
                 latest_year = sorted(self.data.keys())[-1]
@@ -1037,30 +1132,44 @@ class MainFrame(wx.Frame):
         if hasattr(self, 'graph_tab'):
             self.graph_tab.update_graphs()
 
-    def prepare_training_data(self):
+    def prepare_main_training_data(self):
+        """Подготовка данных по специальностям (4 колонки)"""
         if len(self.data) < 2:
-            raise ValueError("Нужны данные как минимум за 2 года")
+            raise ValueError("Нужны основные данные за 2+ года")
 
-        features = []
-        targets = []
+        features, targets = [], []
         years = sorted(self.data.keys())
 
         for i in range(len(years) - 1):
-            current = self.data[years[i]]
-            next_year = self.data[years[i + 1]]
+            current = self.data[years[i]].copy()
+            next_year = self.data[years[i + 1]].copy()
 
-            merged = pd.merge(
-                current, next_year,
-                on='specialty',
-                suffixes=('_current', '_next')
-            )
+            # Заменяем нулевые значения на небольшие положительные (0.1)
+            for col in ['budget', 'target', 'quota', 'paid']:
+                current[col] = current[col].replace(0, 0.1)
+                next_year[col] = next_year[col].replace(0, 0.1)
+
+            merged = pd.merge(current, next_year, on='specialty',
+                              suffixes=('_current', '_next'))
+
+            # Логирование для отладки
+            print(f"Year {years[i]} to {years[i + 1]}: {len(merged)} specialties")
 
             features.append(merged[['budget_current', 'target_current',
                                     'quota_current', 'paid_current']].values)
             targets.append(merged[['budget_next', 'target_next',
                                    'quota_next', 'paid_next']].values)
 
-        return np.vstack(features), np.vstack(targets)
+        X = np.vstack(features)
+        y = np.vstack(targets)
+
+        # Проверка на NaN и бесконечности
+        if np.any(np.isnan(X)) or np.any(np.isnan(y)):
+            raise ValueError("Обнаружены NaN значения в данных")
+        if np.any(np.isinf(X)) or np.any(np.isinf(y)):
+            raise ValueError("Обнаружены бесконечные значения в данных")
+
+        return X, y
 
     def update_risk_analysis(self):
         if hasattr(self, 'risk_tab') and self.current_predictions is not None and self.data:
@@ -1155,6 +1264,103 @@ class MainFrame(wx.Frame):
 
     def update_status(self, message):
         self.statusbar.SetStatusText(message, 0)
+
+    def save_models(self, event=None):
+        """Сохраняет обе модели (основную и городскую)"""
+        try:
+            # Создаем диалог сохранения файла
+            with wx.FileDialog(
+                    self,
+                    message="Сохранить модель",
+                    defaultDir=os.getcwd(),
+                    defaultFile="university_model_main.pkl",
+                    wildcard="Pickle files (*.pkl)|*.pkl",
+                    style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT
+            ) as dlg:
+                if dlg.ShowModal() == wx.ID_CANCEL:
+                    return
+
+                path = dlg.GetPath()
+                base_path = os.path.splitext(path)[0]  # Удаляем расширение, если есть
+
+                try:
+                    # Сохраняем основную модель
+                    if hasattr(self, 'nn_main'):
+                        main_path = f"{base_path}_main.pkl"
+                        with open(main_path, 'wb') as f:
+                            pickle.dump(self.nn_main.__dict__, f)
+
+                    # Сохраняем городскую модель
+                    if hasattr(self, 'nn_city'):
+                        city_path = f"{base_path}_city.pkl"
+                        with open(city_path, 'wb') as f:
+                            pickle.dump(self.nn_city.__dict__, f)
+
+                    wx.MessageBox(
+                        f"Модели успешно сохранены:\n{main_path}\n{city_path}",
+                        "Успех",
+                        wx.OK | wx.ICON_INFORMATION
+                    )
+                except Exception as e:
+                    wx.MessageBox(
+                        f"Ошибка сохранения моделей: {str(e)}",
+                        "Ошибка",
+                        wx.OK | wx.ICON_ERROR
+                    )
+        except Exception as e:
+            wx.MessageBox(
+                f"Ошибка при создании диалога сохранения: {str(e)}",
+                "Ошибка",
+                wx.OK | wx.ICON_ERROR
+            )
+
+    def load_models(self, event=None):
+        """Загружает обе модели и обновляет интерфейс"""
+        with wx.FileDialog(
+                self,
+                message="Выберите файл модели (_main.pkl или _city.pkl)",
+                defaultDir=os.getcwd(),
+                wildcard="Pickle files (*.pkl)|*.pkl",
+                style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST
+        ) as dlg:
+            if dlg.ShowModal() == wx.ID_CANCEL:
+                return False
+
+            path = dlg.GetPath()
+            base_path = path.replace('_main.pkl', '').replace('_city.pkl', '')
+
+            try:
+                # Загрузка основной модели
+                main_path = f"{base_path}_main.pkl"
+                if os.path.exists(main_path):
+                    with open(main_path, 'rb') as f:
+                        if not hasattr(self, 'nn_main'):
+                            self.nn_main = NeuralNetwork(4)
+                        self.nn_main.__dict__ = pickle.load(f)
+                        print(f"Основная модель загружена из {main_path}")
+
+                # Загрузка городской модели
+                city_path = f"{base_path}_city.pkl"
+                if os.path.exists(city_path):
+                    with open(city_path, 'rb') as f:
+                        if not hasattr(self, 'nn_city'):
+                            self.nn_city = NeuralNetwork(2)
+                        self.nn_city.__dict__ = pickle.load(f)
+                        print(f"Городская модель загружена из {city_path}")
+
+                # Обновляем статус
+                self.notifier.show_status("Модели успешно загружены", 3000)
+
+                # Проверяем, что хотя бы одна модель загружена
+                self.models_loaded = hasattr(self, 'nn_main') or hasattr(self, 'nn_city')
+
+                return True
+
+            except Exception as e:
+                error_msg = f"Ошибка загрузки: {str(e)}"
+                print(error_msg)
+                self.notifier.show_popup("Ошибка", error_msg, wx.ICON_ERROR)
+                return False
 
     def on_open(self, event):
         with wx.FileDialog(self, "Открыть проект", wildcard="*.aproj",
